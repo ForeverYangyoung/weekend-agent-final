@@ -1,0 +1,52 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Env & secrets
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (future apps/web)
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# Cursor — keep Super Dev commands/rules; ignore other local state
+.cursor/*
+!.cursor/commands/
+!.cursor/commands/**
+!.cursor/rules/
+!.cursor/rules/**
+
+# Super Dev generated artifacts
+output/*
+!output/weekend-agent-bootstrap.md
+
+# Super Dev runtime state (local only)
+.super-dev/changes/
+.super-dev/review-state/
+.super-dev/workflow-state.json
+.super-dev/SESSION_BRIEF.md
