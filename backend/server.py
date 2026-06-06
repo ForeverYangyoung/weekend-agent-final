@@ -20,6 +20,7 @@ from backend.graph import (
     execution_graph,
     planning_graph,
     replan_graph,
+    revise_graph,
 )
 from backend.schemas import ToolStatus
 from backend.hil import (
@@ -142,6 +143,16 @@ class ReplanAgentRequest(BaseModel):
 class ConfirmAgentRequest(BaseModel):
     session_id: str = Field(..., min_length=8, max_length=32)
     plan_id: str = "primary"
+    selected_addon_ids: list[str] = Field(default_factory=list)
+
+
+class RevisePlanRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=32)
+    plan_id: str = "primary"
+    feedback: str = Field(..., min_length=1, max_length=8000)
+    revision_round: int = 0
+    revision_history: list[dict[str, Any]] = Field(default_factory=list)
+    locked_stages: list[str] = Field(default_factory=list)
     selected_addon_ids: list[str] = Field(default_factory=list)
 
 
@@ -349,6 +360,7 @@ def health() -> dict[str, object]:
         "stream": "/v1/agent/stream",
         "replan": "/v1/agent/replan",
         "confirm": "/v1/agent/confirm",
+        "revise": "/v1/plan/revise",
         "mock_meituan_mode": mode,
         "mock_meituan_base_url": base,
     }
@@ -399,6 +411,64 @@ def confirm_agent(req: ConfirmAgentRequest) -> dict[str, object]:
         "summary_card": _json_safe(final.get("summary_card")),
         "trace": _json_safe(final.get("trace") or []),
         "trace_tail": (final.get("trace") or [])[-6:],
+    }
+
+
+@app.post("/v1/plan/revise")
+def revise_plan(req: RevisePlanRequest) -> dict[str, object]:
+    base = get_session(req.session_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在: {req.session_id}")
+
+    state = select_plan(base, req.plan_id)
+    state = dict(state)
+    state["revise_feedback"] = req.feedback.strip()
+    state["revise_locked_stages"] = list(req.locked_stages)
+    state["selected_addon_ids"] = list(req.selected_addon_ids)
+    state["plan_snapshots"] = list(req.revision_history)
+    state["trace"] = list(base.get("trace") or [])
+
+    try:
+        revised: AgentState = revise_graph.invoke(state)  # type: ignore[arg-type]
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    dry_calls = revised.get("dry_run_calls") or []
+    dry_failed = [c for c in dry_calls if c.status == ToolStatus.FAILED]
+    if dry_failed:
+        reasons = "；".join((c.error or "预检失败") for c in dry_failed[:2])
+        raise HTTPException(status_code=409, detail=f"微调后预检未通过：{reasons}")
+
+    plan_obj = revised.get("plan")
+    if not plan_obj:
+        raise HTTPException(status_code=500, detail="微调后未生成可用方案")
+
+    history = list(req.revision_history)
+    history.append(_json_safe(plan_obj))
+    revised["plan_snapshots"] = history
+    save_session(req.session_id, revised)
+
+    revise_events = revised.get("revise_events") or []
+    return {
+        "status": "applied",
+        "session_id": req.session_id,
+        "plan_id": req.plan_id,
+        "updated_plan": _json_safe(plan_obj),
+        "alternative_plans": _json_safe(revised.get("plan_alternatives") or []),
+        "plans": build_plans_payload(revised),
+        "plan_snapshots": history,
+        "plan_events": [
+            {
+                "event_type": e.get("event_type", "plan_created"),
+                "summary": e.get("summary", "已应用微调"),
+                "timestamp": "now",
+                "version": req.revision_round + 1,
+            }
+            for e in revise_events
+        ],
+        "locked_stages": req.locked_stages,
+        "revision_round": req.revision_round + 1,
+        "patches_applied": max(1, len(revise_events)),
     }
 
 

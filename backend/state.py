@@ -50,6 +50,10 @@ class AgentState(TypedDict, total=False):
 
     # ── HIL：前端点改标签回写（replan 前写入，hil 节点消费后清空）──
     profile_overrides: list[dict[str, str]]
+    revise_feedback: str
+    revise_locked_stages: list[str]
+    revise_events: list[dict[str, str]]
+    plan_snapshots: list[dict[str, Any]]
 
     # ── 用户在 HIL 节点的确认结果 ──
     user_confirmed: bool

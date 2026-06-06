@@ -1,11 +1,91 @@
 import type { ProgressStep } from '../types'
+import { stepLabel } from '../traceUi'
 
-interface Props {
+/** LangGraph 主链路节点（Final 版状态机） */
+export const LANGGRAPH_NODES = [
+  { id: 'START', label: 'START' },
+  { id: 'profiler', label: 'Profiler' },
+  { id: 'researcher', label: 'Researcher' },
+  { id: 'planner', label: 'Planner' },
+  { id: 'targeted_researcher', label: 'TargetedResearcher' },
+  { id: 'critic', label: 'Critic' },
+  { id: 'dry_run', label: 'DryRun' },
+  { id: 'awaiting_confirm', label: 'HIL' },
+  { id: 'executor', label: 'Executor' },
+  { id: 'END', label: 'END' },
+] as const
+
+export function normalizeGraphNode(node: string): string {
+  if (!node || node === 'START') return 'START'
+  if (node === 'END' || node === 'done') return 'END'
+  if (node.startsWith('recovery/')) return 'dry_run'
+  if (node === 'hil_apply') return 'profiler'
+  if (node === 'awaiting_confirm') return 'awaiting_confirm'
+  return node
+}
+
+interface NodeProps {
+  currentNode: string
+  live?: boolean
+}
+
+interface StepsProps {
   steps: ProgressStep[]
   live?: boolean
 }
 
-export function ProgressIndicator({ steps, live }: Props) {
+type Props = NodeProps | StepsProps
+
+function isNodeMode(props: Props): props is NodeProps {
+  return 'currentNode' in props
+}
+
+export function ProgressIndicator(props: Props) {
+  if (isNodeMode(props)) {
+    return <NodeProgressIndicator currentNode={props.currentNode} live={props.live} />
+  }
+  return <StepsProgressIndicator steps={props.steps} live={props.live} />
+}
+
+function NodeProgressIndicator({ currentNode, live }: NodeProps) {
+  const active = normalizeGraphNode(currentNode)
+  const activeIdx = LANGGRAPH_NODES.findIndex((n) => n.id === active)
+
+  return (
+    <div className={`graph-progress ${live ? 'graph-progress-live' : ''}`}>
+      <div className="graph-progress-track">
+        {LANGGRAPH_NODES.map((node, i) => {
+          const done = activeIdx >= 0 && i < activeIdx
+          const current = node.id === active
+          const recovery = currentNode.startsWith('recovery/') && node.id === 'dry_run'
+          return (
+            <div
+              key={node.id}
+              className={`graph-progress-node ${done ? 'done' : ''} ${current ? 'active' : ''} ${recovery ? 'recovery' : ''}`}
+            >
+              <span className="graph-progress-dot">{done ? '✓' : current ? '●' : '○'}</span>
+              <span className="graph-progress-label">{node.label}</span>
+            </div>
+          )
+        })}
+      </div>
+      <div className="graph-progress-status">
+        {live ? (
+          <>
+            <span className="graph-progress-spinner" />
+            <span>
+              当前节点：<strong>{stepLabel(currentNode)}</strong>
+            </span>
+          </>
+        ) : (
+          <span>状态机就绪 · 等待触发</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StepsProgressIndicator({ steps, live }: StepsProps) {
   return (
     <div className={`ai-bubble progress-bubble ${live ? 'progress-live' : ''}`}>
       <div className="progress-header">

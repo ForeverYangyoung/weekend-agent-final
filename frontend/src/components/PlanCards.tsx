@@ -8,6 +8,7 @@ interface Props {
   onConfirm: (planId: string, selectedAddonIds: string[]) => void
   onToggleAddon?: (planId: string, addonId: string, checked: boolean) => void
   onEditPreference: () => void
+  onRevise?: (planId: string, feedback: string) => void
   onAcceptAlternative?: (planId: string) => void
   onReject: () => void
   disabled?: boolean
@@ -20,6 +21,7 @@ export function PlanCards({
   onConfirm,
   onToggleAddon,
   onEditPreference,
+  onRevise,
   onAcceptAlternative,
   onReject,
   disabled,
@@ -37,6 +39,7 @@ export function PlanCards({
             onConfirm={onConfirm}
             onToggleAddon={onToggleAddon}
             onEditPreference={onEditPreference}
+            onRevise={onRevise}
             onAcceptAlternative={onAcceptAlternative}
             disabled={disabled}
           />

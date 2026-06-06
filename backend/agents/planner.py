@@ -624,6 +624,7 @@ def build_family_stub() -> Plan:
                     category="亲子活动",
                     score=0.92,
                     reason="离家 6km，有儿童游乐区，5 岁孩子合适",
+                    metadata={"avg_price": 0, "distance_km": 6},
                 ),
             ),
             PlanStage(
@@ -633,9 +634,14 @@ def build_family_stub() -> Plan:
                 primary=POICandidate(
                     poi_id="poi_rest_021",
                     name="Wagas 沙拉轻食（奥森店）",
-                    category="餐厅",
+                    category="轻食",
                     score=0.88,
-                    reason="低卡符合减肥需求；有儿童椅",
+                    reason="奥森北园出口步行 5 分钟，低卡沙拉；有儿童椅",
+                    metadata={
+                        "avg_price": 80,
+                        "distance_km": 5.5,
+                        "tags": ["轻食", "沙拉", "低卡"],
+                    },
                 ),
             ),
             PlanStage(

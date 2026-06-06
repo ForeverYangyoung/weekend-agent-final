@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { DisplayPlan } from '../types'
 
 interface Props {
@@ -8,6 +9,7 @@ interface Props {
   onConfirm: (planId: string, selectedAddonIds: string[]) => void
   onToggleAddon?: (planId: string, addonId: string, checked: boolean) => void
   onEditPreference: () => void
+  onRevise?: (planId: string, feedback: string) => void
   onAcceptAlternative?: (planId: string) => void
   disabled?: boolean
 }
@@ -20,9 +22,12 @@ export function PlanCard({
   onConfirm,
   onToggleAddon,
   onEditPreference,
+  onRevise,
   onAcceptAlternative,
   disabled,
 }: Props) {
+  const [feedbackText, setFeedbackText] = useState('')
+  const [showFeedback, setShowFeedback] = useState(false)
   const canOrder =
     plan.isValid || (plan.issueKind === 'alternative_available' && alternativeAccepted)
   const confirmDisabled = disabled || !canOrder
@@ -45,22 +50,11 @@ export function PlanCard({
   return (
     <div className={`plan-card ${canOrder ? '' : 'plan-card-invalid'}`}>
       <div className="plan-card-header">
-        <span className="plan-card-title">{plan.venueChain}</span>
-        <span className="plan-card-subtitle">{plan.diffSummary}</span>
+        <span className="plan-card-title">{plan.title}</span>
+        <span className="plan-card-subtitle">{plan.venueChain}</span>
         {isTop1 && canOrder && <div className="badge-recommend">推荐</div>}
         {!canOrder && <div className="badge-invalid">{badgeLabel}</div>}
       </div>
-
-      {plan.activeConstraints.length > 0 && (
-        <div className="plan-active-constraints">
-          <div className="plan-active-constraints-label">我会重点照顾</div>
-          <div className="plan-active-constraints-tags">
-            {plan.activeConstraints.map((c, i) => (
-              <span key={`${c}-${i}`} className="active-constraint-tag">{c}</span>
-            ))}
-          </div>
-        </div>
-      )}
 
       {showIssuePanel && (
         <div className={issuePanelClass}>
@@ -83,17 +77,6 @@ export function PlanCard({
       {plan.issueKind === 'alternative_available' && alternativeAccepted && (
         <div className="plan-issue-panel plan-issue-panel-accepted">
           <div className="plan-issue-label">好的，已按就近替代方案继续，可以下单</div>
-        </div>
-      )}
-
-      {plan.matchReasons.length > 0 && (
-        <div className="plan-match-reasons">
-          <div className="plan-match-label">为什么推荐这条路线</div>
-          <div className="plan-match-tags">
-            {plan.matchReasons.map((r, i) => (
-              <span key={i} className="match-tag">{r}</span>
-            ))}
-          </div>
         </div>
       )}
 
@@ -147,16 +130,29 @@ export function PlanCard({
             接受这个替代
           </button>
         )}
-        <button
-          type="button"
-          className={
-            plan.issueKind === 'needs_preference_fix' ? 'btn-primary' : 'btn-secondary'
-          }
-          onClick={onEditPreference}
-          disabled={disabled}
-        >
-          {plan.issueKind === 'needs_preference_fix' ? '调整一下偏好' : '换个偏好再试'}
-        </button>
+        {plan.issueKind === 'needs_preference_fix' && (
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={onEditPreference}
+            disabled={disabled}
+          >
+            调整一下偏好
+          </button>
+        )}
+        {!showFeedback && (
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setShowFeedback(true)
+              setFeedbackText('')
+            }}
+            disabled={disabled}
+          >
+            微调方案
+          </button>
+        )}
         <button
           type="button"
           className={
@@ -183,6 +179,43 @@ export function PlanCard({
                 : '正在换更合适的方案'}
         </button>
       </div>
+      {showFeedback && (
+        <div className="plan-feedback-panel">
+          <input
+            type="text"
+            className="plan-feedback-input"
+            value={feedbackText}
+            onChange={(e) => setFeedbackText(e.target.value)}
+            placeholder="例如：餐厅换一个，活动别动；或取消加餐"
+          />
+          <div className="plan-feedback-actions">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!feedbackText.trim() || disabled}
+              onClick={() => {
+                if (!feedbackText.trim()) return
+                onRevise?.(plan.id, feedbackText.trim())
+                setShowFeedback(false)
+                setFeedbackText('')
+              }}
+            >
+              提交微调
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                setShowFeedback(false)
+                setFeedbackText('')
+              }}
+              disabled={disabled}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -8,17 +8,17 @@ import type {
   ProgressStep,
   SSEEvent,
 } from './types'
-import { confirmAgent, replanAgent, streamAgent } from './api'
+import { confirmAgent, replanAgent, revisePlan, streamAgent } from './api'
 import { mapPlansFromBackend } from './mapPlans'
 import { SCENARIO_PRESETS, type ScenarioId } from './scenarioPresets'
 import { InputBar } from './components/InputBar'
 import { WelcomeScreen } from './components/WelcomeScreen'
-import { ProgressIndicator } from './components/ProgressIndicator'
 import { PlanCards } from './components/PlanCards'
 import { PreferencePanel } from './components/PreferencePanel'
 import { ProfileChips } from './components/ProfileChips'
 import { ScenarioSetup } from './components/ScenarioSetup'
-import { TracePanel } from './components/TracePanel'
+import { AgentDashboard } from './components/AgentDashboard'
+import { HilInterruptModal } from './components/HilInterruptModal'
 import { uiTraceLine } from './traceUi'
 
 const DEFAULT_PANEL_PREFS = {
@@ -133,8 +133,12 @@ export default function App() {
   >('idle')
   const [activeScenario, setActiveScenario] = useState<ScenarioId | null>(null)
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([])
-  const [traceLines, setTraceLines] = useState<string[]>([])
-  const [currentTraceStep, setCurrentTraceStep] = useState<string | null>(null)
+  const [currentNode, setCurrentNode] = useState<string>('START')
+  const [agentLogs, setAgentLogs] = useState<string[]>([])
+  const [hilInterrupt, setHilInterrupt] = useState<{
+    reason: string
+    kind?: 'conflict' | 'recovery' | 'error'
+  } | null>(null)
   const [plans, setPlans] = useState<DisplayPlan[]>([])
   const [profileChips, setProfileChips] = useState<ProfileChip[]>([])
   const [pendingOverrides, setPendingOverrides] = useState<ProfileOverride[]>([])
@@ -148,6 +152,11 @@ export default function App() {
   const [selectedAddonsByPlan, setSelectedAddonsByPlan] = useState<Map<string, Set<string>>>(
     new Map(),
   )
+  const [revisionRoundByPlan, setRevisionRoundByPlan] = useState<Map<string, number>>(new Map())
+  const [revisionHistoryByPlan, setRevisionHistoryByPlan] = useState<Map<string, Record<string, unknown>[]>>(
+    new Map(),
+  )
+  const [traceCollapsed, setTraceCollapsed] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   function initSelectedAddons(mappedPlans: DisplayPlan[]) {
@@ -159,6 +168,13 @@ export default function App() {
       }
       return next
     })
+  }
+
+  function selectedAddonIdsOf(planId: string, fallbackPlan?: DisplayPlan): string[] {
+    const selected = selectedAddonsByPlan.get(planId)
+    if (selected) return Array.from(selected)
+    if (fallbackPlan?.addons?.length) return fallbackPlan.addons.map((a) => a.addon_id)
+    return []
   }
 
   function handleToggleAddon(planId: string, addonId: string, checked: boolean) {
@@ -189,20 +205,20 @@ export default function App() {
     return full
   }
 
-  function appendTrace(lines: string[]) {
+  function appendAgentLogs(lines: string[], node: string) {
     if (!lines.length) return
-    setTraceLines((prev) => [...prev, ...lines])
+    setAgentLogs((prev) => [...prev, ...lines.map((log) => `[${node}] ${log}`)])
   }
 
   function pushUiTrace(phase: string, message: string) {
-    appendTrace([uiTraceLine(phase, message)])
+    setAgentLogs((prev) => [...prev, uiTraceLine(phase, message)])
   }
 
-  function applyTraceDelta(delta: string[] | undefined, fullTrace?: string[]) {
+  function applyTraceDelta(node: string, delta: string[] | undefined, fullTrace?: string[]) {
     if (delta?.length) {
-      appendTrace(delta)
+      appendAgentLogs(delta, node)
     } else if (fullTrace?.length) {
-      setTraceLines(fullTrace)
+      setAgentLogs(fullTrace.map((line) => (line.startsWith('[') ? line : `[${node}] ${line}`)))
     }
     const merged = fullTrace ?? []
     if (merged.length) {
@@ -216,27 +232,38 @@ export default function App() {
 
     for await (const ev of events) {
       if (ev.event === 'start') {
-        setCurrentTraceStep(null)
+        setCurrentNode('START')
       }
       if (ev.event === 'step') {
-        if (ev.step) setCurrentTraceStep(ev.step)
+        const node = ev.step ?? 'START'
+        setCurrentNode(node)
         const full = ev.state?.trace ?? []
         lastTrace = full
-        applyTraceDelta(ev.trace_delta, full)
+        applyTraceDelta(node, ev.trace_delta, full)
       }
       if (ev.event === 'trace_delta' && ev.lines?.length) {
-        appendTrace(ev.lines)
+        const node = ev.note === 'dry_run_recovery_start' ? 'recovery/dry_run' : 'dry_run'
+        setCurrentNode(node)
+        appendAgentLogs(ev.lines, node)
         lastTrace = [...lastTrace, ...ev.lines]
         setProgressSteps(progressFromTrace(lastTrace))
+        if (ev.note === 'dry_run_recovery_start') {
+          setHilInterrupt({
+            kind: 'recovery',
+            reason: ev.lines[0] ?? '预检满座/库存不足，系统可自动拉黑 POI 并换备选店',
+          })
+        }
       }
       if (ev.event === 'state' && ev.state?.trace) {
         lastTrace = ev.state.trace
-        setTraceLines(lastTrace)
+        setAgentLogs(
+          lastTrace.map((line) => (line.startsWith('[') ? line : `[state] ${line}`)),
+        )
         setProgressSteps(progressFromTrace(lastTrace))
       }
       if (ev.event === 'awaiting_confirm') {
         awaiting = ev
-        setCurrentTraceStep('awaiting_confirm')
+        setCurrentNode('awaiting_confirm')
         const planNames = (ev.plans ?? [])
           .map((p) => p.title ?? p.id)
           .join(' | ')
@@ -244,8 +271,19 @@ export default function App() {
           '就绪',
           `左侧将展示 ${ev.plans?.length ?? 0} 套方案，请用户确认：${planNames}`,
         )
+        if ((ev.preference_conflicts ?? []).length > 0) {
+          const c = ev.preference_conflicts![0]
+          setHilInterrupt({
+            kind: 'conflict',
+            reason: `${c.headline} ${c.detail}`,
+          })
+        }
       }
       if (ev.event === 'error') {
+        setHilInterrupt({
+          kind: 'error',
+          reason: ev.message ?? '规划失败',
+        })
         throw new Error(ev.message ?? '规划失败')
       }
     }
@@ -332,7 +370,9 @@ export default function App() {
     setAppState('streaming')
     setInputDisabled(true)
     setProgressSteps(TRACE_PROGRESS.map((t) => ({ label: t.label, done: false })))
-    setCurrentTraceStep(null)
+    setCurrentNode('START')
+    setAgentLogs([])
+    setHilInterrupt(null)
     pushUiTrace('触发', `开始规划 · ${preset.title}${extra}`)
     setPreferenceConflicts([])
     setAcceptedAlternatives(new Set())
@@ -366,7 +406,9 @@ export default function App() {
     setAcceptedAlternatives(new Set())
     setActiveScenario(null)
     setSessionId(null)
-    setCurrentTraceStep(null)
+    setCurrentNode('START')
+    setAgentLogs([])
+    setHilInterrupt(null)
     pushUiTrace('触发', `自由输入规划：${text.trim().slice(0, 48)}`)
 
     runInitialStream(text.trim())
@@ -421,7 +463,8 @@ export default function App() {
     setInputDisabled(true)
     setIsReplanning(true)
     setProgressSteps(TRACE_PROGRESS.map((t) => ({ label: t.label, done: false })))
-    setCurrentTraceStep(null)
+    setCurrentNode('START')
+    setHilInterrupt(null)
     pushUiTrace('重规划', userText)
     setPendingOverrides(overrides)
 
@@ -471,12 +514,13 @@ export default function App() {
 
     try {
       const result = await confirmAgent(sessionId, planId, selectedAddonIds)
-      setCurrentTraceStep('executor')
+      setCurrentNode('executor')
       if (result.trace_tail?.length) {
-        appendTrace(result.trace_tail)
+        appendAgentLogs(result.trace_tail, 'executor')
       } else if (result.trace?.length) {
-        appendTrace(result.trace)
+        appendAgentLogs(result.trace, 'executor')
       }
+      setCurrentNode('END')
 
       const orderLines = result.orders
         .map((o) => `✅ ${o.stage} 已下单 · 订单号 ${o.order_id}`)
@@ -495,6 +539,71 @@ export default function App() {
         type: 'text',
         text: `下单失败：${err instanceof Error ? err.message : '未知错误'}`,
       })
+    }
+  }
+
+  async function handleRevisePlan(planId: string, feedback: string) {
+    if (!sessionId || !feedback.trim()) return
+    const plan = plans.find((p) => p.id === planId)
+    if (!plan) return
+
+    const revisionRound = revisionRoundByPlan.get(planId) ?? 0
+    const revisionHistory = revisionHistoryByPlan.get(planId) ?? []
+    const selectedAddonIds = selectedAddonIdsOf(planId, plan)
+    const lockedStages: string[] = []
+    if (feedback.includes('活动别动') || feedback.includes('玩别动')) lockedStages.push('play')
+    if (feedback.includes('餐厅别动') || feedback.includes('吃别动')) lockedStages.push('food')
+    if (feedback.includes('加餐别动')) lockedStages.push('addon')
+
+    addMessage({ role: 'user', type: 'text', text: `微调方案：${feedback}` })
+    setInputDisabled(true)
+    pushUiTrace('微调', `plan=${planId} feedback=${feedback}`)
+    try {
+      const revised = await revisePlan({
+        session_id: sessionId,
+        plan_id: planId,
+        feedback,
+        revision_round: revisionRound,
+        revision_history: revisionHistory,
+        locked_stages: lockedStages,
+        selected_addon_ids: selectedAddonIds,
+      })
+      const mapped = mapPlansFromBackend(revised.plans ?? [])
+      if (!mapped.length) {
+        throw new Error('后端未返回可展示方案')
+      }
+      setPlans(mapped)
+      initSelectedAddons(mapped)
+      setRevisionRoundByPlan((prev) => {
+        const next = new Map(prev)
+        next.set(planId, revised.revision_round ?? revisionRound + 1)
+        return next
+      })
+      setRevisionHistoryByPlan((prev) => {
+        const next = new Map(prev)
+        next.set(planId, revised.plan_snapshots ?? revisionHistory)
+        return next
+      })
+      if (revised.plan_events?.length) {
+        const txt = revised.plan_events.map((e) => `✓ ${e.summary}`).join('\n')
+        const msg = addMessage({ role: 'ai', type: 'text', text: `已应用微调：\n${txt}` })
+        msg.planEvents = revised.plan_events
+      }
+      const msg = addMessage({
+        role: 'ai',
+        type: 'plans',
+        text: mapped.length > 1 ? '这是微调后的方案（含备选）' : '这是微调后的方案',
+      })
+      msg.plans = mapped
+      setAppState('plans_displayed')
+    } catch (err) {
+      addMessage({
+        role: 'ai',
+        type: 'text',
+        text: `微调失败：${err instanceof Error ? err.message : '未知错误'}`,
+      })
+    } finally {
+      setInputDisabled(false)
     }
   }
 
@@ -536,6 +645,15 @@ export default function App() {
     setAppState('hil_editing')
   }
 
+  async function handleHilResume() {
+    if (!sessionId) {
+      setHilInterrupt(null)
+      return
+    }
+    setHilInterrupt(null)
+    await runReplanStream([], '授权系统自动容灾 · 重规划')
+  }
+
   function handleRejectPlan() {
     addMessage({
       role: 'user',
@@ -551,8 +669,27 @@ export default function App() {
   }
 
   const showChipEditor =
-    (appState === 'hil_editing' || appState === 'plans_displayed') && !activeScenario
+    appState === 'hil_editing' && !activeScenario
   const activePreset = activeScenario ? SCENARIO_PRESETS[activeScenario] : null
+
+  if (!traceCollapsed) {
+    return (
+      <div className="trace-page">
+        <button
+          type="button"
+          className="trace-page-back"
+          onClick={() => setTraceCollapsed(true)}
+        >
+          ← 返回规划界面
+        </button>
+        <AgentDashboard
+          currentNode={currentNode}
+          agentLogs={agentLogs}
+          isProcessing={appState === 'streaming' || isReplanning}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="demo-shell">
@@ -599,6 +736,7 @@ export default function App() {
                         onConfirm={handleConfirmPlan}
                         onToggleAddon={handleToggleAddon}
                         onEditPreference={handleEditPreference}
+                        onRevise={handleRevisePlan}
                         onAcceptAlternative={handleAcceptAlternative}
                         onReject={handleRejectPlan}
                         disabled={appState === 'confirmed' || inputDisabled}
@@ -665,12 +803,6 @@ export default function App() {
               </div>
             )}
 
-            {appState === 'streaming' && progressSteps.length > 0 && (
-              <div className="msg-row msg-ai">
-                <ProgressIndicator steps={progressSteps} live />
-              </div>
-            )}
-
             <div ref={messagesEndRef} />
           </div>
 
@@ -695,16 +827,25 @@ export default function App() {
             onClose={() => setIsPreferencePanelOpen(false)}
             onSubmit={handlePreferenceSubmit}
           />
+
+          {hilInterrupt && (
+            <HilInterruptModal
+              interrupt={hilInterrupt}
+              onResume={handleHilResume}
+              onDismiss={() => setHilInterrupt(null)}
+              loading={isReplanning}
+            />
+          )}
         </div>
       </div>
 
-      <div className="demo-trace-col">
-        <TracePanel
-          lines={traceLines}
-          live={appState === 'streaming'}
-          currentStep={currentTraceStep}
-        />
-      </div>
+      <button
+        type="button"
+        className="trace-fab"
+        onClick={() => setTraceCollapsed(false)}
+      >
+        Trace
+      </button>
     </div>
   )
 }

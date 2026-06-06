@@ -31,6 +31,7 @@ from backend.nodes import (
     executor_node,
     hil_apply_overrides_node,
     notifier_node,
+    plan_patcher_node,
     planner_node,
     profiler_node,
     researcher_node,
@@ -214,8 +215,27 @@ def build_execution_graph():
     return g.compile()
 
 
+def build_revise_graph():
+    """方案微调：patch 当前方案后重跑 critic + dry_run，不进入执行下单。"""
+    g = StateGraph(AgentState)
+    g.add_node("plan_patcher", plan_patcher_node)
+    g.add_node("critic", critic_node)
+    g.add_node("dry_run", dry_run_node)
+
+    g.add_edge(START, "plan_patcher")
+    g.add_edge("plan_patcher", "critic")
+    g.add_conditional_edges(
+        "critic",
+        _critic_router,
+        {"dry_run": "dry_run", "planner": "dry_run"},
+    )
+    g.add_edge("dry_run", END)
+    return g.compile()
+
+
 agent_graph = build_graph()
 planning_graph = build_planning_graph()
 dry_run_recovery_graph = build_dry_run_recovery_graph()
 replan_graph = build_replan_graph()
 execution_graph = build_execution_graph()
+revise_graph = build_revise_graph()

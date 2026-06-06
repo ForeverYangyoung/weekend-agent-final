@@ -27,8 +27,15 @@ def build_frontend() -> bool:
 
     frontend_dist = frontend_dir / "dist"
 
-    if frontend_dist.is_dir() and (frontend_dist / "index.html").is_file():
-        print(f"  [ok] 前端产物已存在 ({frontend_dir.name}/dist)，跳过构建")
+    src_marker = frontend_dir / "src" / "App.tsx"
+    dist_marker = frontend_dist / "index.html"
+    if (
+        frontend_dist.is_dir()
+        and dist_marker.is_file()
+        and src_marker.is_file()
+        and dist_marker.stat().st_mtime >= src_marker.stat().st_mtime
+    ):
+        print(f"  [ok] 前端产物已是最新 ({frontend_dir.name}/dist)，跳过构建")
         return True
 
     print(f"  [build] 正在构建 {frontend_dir.name}/ ...")

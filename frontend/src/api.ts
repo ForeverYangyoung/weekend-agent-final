@@ -74,6 +74,20 @@ export interface ConfirmResult {
   trace_tail?: string[]
 }
 
+export interface RevisePlanResult {
+  status: 'applied' | 'rejected'
+  session_id: string
+  plan_id: string
+  updated_plan?: Record<string, unknown>
+  alternative_plans?: Array<Record<string, unknown>>
+  plans?: import('./types').BackendPlanPayload[]
+  plan_snapshots: Array<Record<string, unknown>>
+  plan_events: Array<{ event_type: string; summary: string; timestamp: string; version: number }>
+  locked_stages: string[]
+  revision_round: number
+  patches_applied: number
+}
+
 export async function confirmAgent(
   sessionId: string,
   planId: string,
@@ -93,4 +107,25 @@ export async function confirmAgent(
     throw new Error(`${res.status} ${text}`)
   }
   return res.json() as Promise<ConfirmResult>
+}
+
+export async function revisePlan(req: {
+  session_id: string
+  plan_id: string
+  feedback: string
+  revision_round: number
+  revision_history: Array<Record<string, unknown>>
+  locked_stages: string[]
+  selected_addon_ids: string[]
+}): Promise<RevisePlanResult> {
+  const res = await fetch('/v1/plan/revise', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`${res.status} ${text}`)
+  }
+  return res.json() as Promise<RevisePlanResult>
 }

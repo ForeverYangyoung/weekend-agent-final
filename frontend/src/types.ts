@@ -145,6 +145,7 @@ export interface ChatMessage {
   plans?: DisplayPlan[]
   progressSteps?: ProgressStep[]
   preferences?: PreferenceState
+  planEvents?: Array<{ event_type: string; summary: string; timestamp?: string; version?: number }>
   timestamp: number
 }
 
