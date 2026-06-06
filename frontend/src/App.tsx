@@ -19,6 +19,7 @@ import { ProfileChips } from './components/ProfileChips'
 import { ScenarioSetup } from './components/ScenarioSetup'
 import { AgentDashboard } from './components/AgentDashboard'
 import { HilInterruptModal } from './components/HilInterruptModal'
+import { humanizeRecoveryReason, traceHadAutoRecovery } from './recoveryCopy'
 import { uiTraceLine } from './traceUi'
 
 const DEFAULT_PANEL_PREFS = {
@@ -248,9 +249,10 @@ export default function App() {
         lastTrace = [...lastTrace, ...ev.lines]
         setProgressSteps(progressFromTrace(lastTrace))
         if (ev.note === 'dry_run_recovery_start') {
+          const raw = ev.lines[0] ?? ''
           setHilInterrupt({
             kind: 'recovery',
-            reason: ev.lines[0] ?? '预检满座/库存不足，系统可自动拉黑 POI 并换备选店',
+            reason: humanizeRecoveryReason(raw),
           })
         }
       }
@@ -264,6 +266,7 @@ export default function App() {
       if (ev.event === 'awaiting_confirm') {
         awaiting = ev
         setCurrentNode('awaiting_confirm')
+        setHilInterrupt((prev) => (prev?.kind === 'recovery' ? null : prev))
         const planNames = (ev.plans ?? [])
           .map((p) => p.title ?? p.id)
           .join(' | ')
@@ -316,11 +319,15 @@ export default function App() {
         : primaryIssue?.code === 'cuisine_not_matched_but_nearby'
           ? primaryIssue.detail
           : ''
+    const recoveryHint = traceHadAutoRecovery(lastTrace)
+      ? '刚才有一家店满座了，已自动帮您换成备选餐厅，请看看下方新方案。'
+      : ''
     const planMsg = addMessage({
       role: 'ai',
       type: 'plans',
       text: conflictHint
         || cuisineHint
+        || recoveryHint
         || (chipText
           ? `已按约束（${chipText}）筛出 ${awaiting.plans.length} 套不同店组合。绿标是命中说明；若指定菜系附近没有店，卡片会写明距离原因。`
           : '预检完成！下方是真实候选方案。可点标签修改偏好后重搜，满意再点「选这个」确认下单。'),
@@ -646,12 +653,16 @@ export default function App() {
   }
 
   async function handleHilResume() {
+    if (hilInterrupt?.kind === 'recovery') {
+      setHilInterrupt(null)
+      return
+    }
     if (!sessionId) {
       setHilInterrupt(null)
       return
     }
     setHilInterrupt(null)
-    await runReplanStream([], '授权系统自动容灾 · 重规划')
+    await runReplanStream([], '请帮我重新规划一套方案')
   }
 
   function handleRejectPlan() {

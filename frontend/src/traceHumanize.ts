@@ -99,7 +99,7 @@ export function humanizeTraceLine(raw: string): string {
 
   if (raw.includes('[Planner]')) {
     if (body.includes('重规划')) {
-      return `Planner | Recovery Replan | blocked POI 已剔除 | ${body}`
+      return `规划 | 满座后换店重排 | ${body}`
     }
     return `Planner | 首轮排程与 Top-K 方案生成 | ${body.replace('首次规划：', '')}`
   }
@@ -116,7 +116,7 @@ export function humanizeTraceLine(raw: string): string {
   }
 
   if (raw.includes('[Executor·恢复]') || raw.includes('[DryRun·恢复]')) {
-    return `DryRun | Recovery 启动 | ${body}`
+    return `预检 | 自动换店 | ${body}`
   }
 
   if (raw.includes('[DryRun·预检]') || raw.includes('[Executor·预检]')) {

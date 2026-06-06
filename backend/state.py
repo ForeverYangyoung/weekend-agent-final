@@ -39,6 +39,7 @@ class AgentState(TypedDict, total=False):
     # Top-K 中除主选外的备选方案，按总分降序；为空说明只生成了一种顺序
     plan_alternatives: list[Plan]
     plan_iteration: int  # 已重规划次数，触发 max_plan_iterations 兜底
+    patch_exhausted: bool  # plan_patcher 已无可用备选，停止容灾回环
 
     # ── Critic 输出 ──
     critic_feedback: CriticFeedback | None

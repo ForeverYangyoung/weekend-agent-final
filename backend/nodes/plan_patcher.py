@@ -11,8 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from backend.agents.planner import attach_hil_addons
+from backend.nodes.dry_run import dry_run_node
 from backend.roles import trace_line
-from backend.schemas import POICandidate, Plan, PlanStage, ResearchResult
+from backend.schemas import POICandidate, Plan, PlanStage, ResearchResult, ToolStatus
 from backend.state import AgentState
 
 
@@ -83,6 +84,70 @@ def _normalize_locked(locked: list[str]) -> set[str]:
     return mapped
 
 
+def _blocked_poi_ids(state: AgentState) -> set[str]:
+    blocked: set[str] = set()
+    for call in state.get("dry_run_calls", []) or []:
+        if call.status == ToolStatus.FAILED:
+            pid = (call.args or {}).get("poi_id")
+            if pid:
+                blocked.add(str(pid))
+    for call in state.get("failed_calls", []) or []:
+        pid = (call.args or {}).get("poi_id")
+        if pid:
+            blocked.add(str(pid))
+    return blocked
+
+
+def _critic_blocked_stages(state: AgentState) -> set[str]:
+    fb = state.get("critic_feedback")
+    if fb is None or fb.approved:
+        return set()
+    stages: set[str] = set()
+    for issue in fb.issues:
+        if issue.severity != "block":
+            continue
+        field = issue.field or ""
+        if "玩" in field:
+            stages.add("玩")
+        if "吃" in field:
+            stages.add("吃")
+    return stages
+
+
+def _auto_patch_blocked_stages(
+    plan: Plan,
+    research: ResearchResult | None,
+    *,
+    blocked_pois: set[str],
+    critic_stages: set[str],
+    locked: set[str],
+) -> tuple[Plan, list[ReviseEvent]]:
+    events: list[ReviseEvent] = []
+    updated = plan.model_copy(deep=True)
+    stage_by_name = {s.name: s for s in updated.stages}
+
+    for name, stage in list(stage_by_name.items()):
+        if name in locked:
+            continue
+        should_swap = stage.primary.poi_id in blocked_pois or name in critic_stages
+        if not should_swap:
+            continue
+        next_stage = _replace_stage_primary(stage, research)
+        if next_stage is None:
+            reason = "预检满座" if stage.primary.poi_id in blocked_pois else "审计未通过"
+            events.append(
+                ReviseEvent("stage_locked", f"{name}阶段无可用备选（{reason}）")
+            )
+            continue
+        old = stage.primary.name
+        new = next_stage.primary.name
+        stage_by_name[name] = next_stage
+        events.append(ReviseEvent("stage_replaced", f"{name}由「{old}」改为「{new}」"))
+
+    updated.stages = [stage_by_name.get(s.name, s) for s in updated.stages]
+    return updated, events
+
+
 def _rewrite_addon_selection(
     feedback: str,
     plan: Plan,
@@ -115,60 +180,108 @@ def plan_patcher_node(state: AgentState) -> dict:
             "revise_events": [],
         }
 
-    if not feedback:
-        return {
-            "selected_addon_ids": selected_addon_ids,
-            "trace": [trace_line("Revise", "空反馈：保持原方案", phase="微调")],
-            "revise_events": [],
-        }
-
     locked = _normalize_locked(list(locked_raw))
     events: list[ReviseEvent] = []
     updated = plan.model_copy(deep=True)
     research = state.get("research_result")
     profile = state.get("group_profile")
     targeted = state.get("targeted_research_result")
+    blocked_pois = _blocked_poi_ids(state)
+    critic_stages = _critic_blocked_stages(state)
+    retry_loop = bool(blocked_pois or critic_stages)
 
     stage_by_name = {s.name: s for s in updated.stages}
-    want_food = _contains_any(feedback, ("餐厅", "吃", "日料", "火锅", "烤肉", "川菜", "轻食"))
-    want_play = _contains_any(feedback, ("活动", "玩", "公园", "展览", "剧本杀", "户外"))
 
-    if want_food and "吃" not in locked and "吃" in stage_by_name:
-        next_stage = _replace_stage_primary(stage_by_name["吃"], research)
-        if next_stage is not None:
-            old = stage_by_name["吃"].primary.name
-            new = next_stage.primary.name
-            stage_by_name["吃"] = next_stage
-            events.append(ReviseEvent("stage_replaced", f"餐厅由「{old}」改为「{new}」"))
-        else:
-            events.append(ReviseEvent("stage_locked", "餐厅无可用备选，保持不变"))
+    if feedback:
+        want_food = _contains_any(
+            feedback, ("餐厅", "吃", "日料", "火锅", "烤肉", "川菜", "轻食")
+        )
+        want_play = _contains_any(
+            feedback, ("活动", "玩", "公园", "展览", "剧本杀", "户外")
+        )
 
-    if want_play and "玩" not in locked and "玩" in stage_by_name:
-        next_stage = _replace_stage_primary(stage_by_name["玩"], research)
-        if next_stage is not None:
-            old = stage_by_name["玩"].primary.name
-            new = next_stage.primary.name
-            stage_by_name["玩"] = next_stage
-            events.append(ReviseEvent("stage_replaced", f"活动由「{old}」改为「{new}」"))
-        else:
-            events.append(ReviseEvent("stage_locked", "活动无可用备选，保持不变"))
+        if want_food and "吃" not in locked and "吃" in stage_by_name:
+            next_stage = _replace_stage_primary(stage_by_name["吃"], research)
+            if next_stage is not None:
+                old = stage_by_name["吃"].primary.name
+                new = next_stage.primary.name
+                stage_by_name["吃"] = next_stage
+                events.append(ReviseEvent("stage_replaced", f"餐厅由「{old}」改为「{new}」"))
+            else:
+                events.append(ReviseEvent("stage_locked", "餐厅无可用备选，保持不变"))
 
-    updated.stages = [stage_by_name.get(s.name, s) for s in updated.stages]
+        if want_play and "玩" not in locked and "玩" in stage_by_name:
+            next_stage = _replace_stage_primary(stage_by_name["玩"], research)
+            if next_stage is not None:
+                old = stage_by_name["玩"].primary.name
+                new = next_stage.primary.name
+                stage_by_name["玩"] = next_stage
+                events.append(ReviseEvent("stage_replaced", f"活动由「{old}」改为「{new}」"))
+            else:
+                events.append(ReviseEvent("stage_locked", "活动无可用备选，保持不变"))
+
+        updated.stages = [stage_by_name.get(s.name, s) for s in updated.stages]
+
+    if retry_loop:
+        updated, auto_events = _auto_patch_blocked_stages(
+            updated,
+            research,
+            blocked_pois=blocked_pois,
+            critic_stages=critic_stages,
+            locked=locked,
+        )
+        events.extend(auto_events)
+
     if profile is not None:
         updated = attach_hil_addons(updated, profile, targeted)
-    selected_addon_ids = _rewrite_addon_selection(feedback, updated, selected_addon_ids)
+    if feedback:
+        selected_addon_ids = _rewrite_addon_selection(feedback, updated, selected_addon_ids)
 
     if not events:
-        events.append(ReviseEvent("plan_created", "已记录微调偏好，方案保持不变"))
+        return {
+            "selected_addon_ids": selected_addon_ids,
+            "trace": [trace_line("Revise", "空反馈：保持原方案", phase="微调")],
+            "revise_events": [],
+        }
 
+    replaced = any(e.event_type == "stage_replaced" for e in events)
+    locked_out = any(e.event_type == "stage_locked" for e in events)
+    patch_exhausted = retry_loop and not replaced and locked_out
+    iteration = state.get("plan_iteration", 0)
+    new_iteration = iteration + 1 if (feedback or retry_loop or replaced) else iteration
+
+    trace_head = (
+        trace_line("Revise", f"应用反馈：{feedback}", phase="微调")
+        if feedback
+        else trace_line("Revise", "这家店订不到了，正在换一家备选", phase="微调")
+    )
     trace_events = [f"{e.event_type}: {e.summary}" for e in events]
-    return {
+
+    result: dict = {
         "plan": updated,
         "selected_addon_ids": selected_addon_ids,
+        "plan_iteration": new_iteration,
+        "patch_exhausted": patch_exhausted,
+        "executed_calls": [],
+        "failed_calls": [],
         "revise_events": [{"event_type": e.event_type, "summary": e.summary} for e in events],
-        "trace": [
-            trace_line("Revise", f"应用反馈：{feedback}", phase="微调"),
-            *[trace_line("Revise", msg, phase="微调") for msg in trace_events],
-        ],
+        "trace": [trace_head, *[trace_line("Revise", msg, phase="微调") for msg in trace_events]],
     }
+
+    if patch_exhausted:
+        result["trace"].append(
+            trace_line(
+                "Revise",
+                "附近暂无更多备选，停止自动换店",
+                phase="微调",
+            )
+        )
+
+    if replaced:
+        result["patch_exhausted"] = False
+        dry_patch = dry_run_node({**state, **result})
+        result["dry_run_calls"] = dry_patch.get("dry_run_calls", [])
+        result["trace"].extend(dry_patch.get("trace") or [])
+
+    return result
 

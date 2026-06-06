@@ -80,6 +80,26 @@ def _dry_run_router(state: AgentState) -> str:
     return "planner" if iteration < max_iter else "executor"
 
 
+def _revise_dry_run_router(state: AgentState) -> str:
+    """微调预检失败 → plan_patcher；无备选或达上限则收敛退出。"""
+    dry_calls = state.get("dry_run_calls", []) or []
+    failed_dry = any(c.status == ToolStatus.FAILED for c in dry_calls)
+    if not failed_dry:
+        return "done"
+    if state.get("patch_exhausted"):
+        return "done"
+    iteration = state.get("plan_iteration", 0)
+    max_iter = get_settings().max_plan_iterations
+    return "retry" if iteration < max_iter else "done"
+
+
+def _post_patch_router(state: AgentState) -> str:
+    """执行侧补丁后：无可用备选则通知用户，否则重试下单。"""
+    if state.get("patch_exhausted"):
+        return "notifier"
+    return "executor"
+
+
 # ─────────────────────────── 装配 ───────────────────────────
 
 
@@ -194,11 +214,12 @@ def build_replan_graph():
 
 
 def build_execution_graph():
-    """HIL 阶段二：用户确认后执行下单 + 交付。"""
+    """真实下单阶段：执行失败时经 compensator 回滚，再经 plan_patcher 换备选后重试下单。"""
     g = StateGraph(AgentState)
     g.add_node("executor", executor_node)
     g.add_node("compensator", compensator_node)
     g.add_node("notifier", notifier_node)
+    g.add_node("plan_patcher", plan_patcher_node)
 
     g.add_edge(START, "executor")
     g.add_conditional_edges(
@@ -209,14 +230,22 @@ def build_execution_graph():
     g.add_conditional_edges(
         "compensator",
         _compensator_router,
-        {"planner": "notifier", "notifier": "notifier"},
+        {
+            "planner": "plan_patcher",
+            "notifier": "notifier",
+        },
+    )
+    g.add_conditional_edges(
+        "plan_patcher",
+        _post_patch_router,
+        {"executor": "executor", "notifier": "notifier"},
     )
     g.add_edge("notifier", END)
     return g.compile()
 
 
 def build_revise_graph():
-    """方案微调：patch 当前方案后重跑 critic + dry_run，不进入执行下单。"""
+    """方案微调：critic 未通过或 dry_run 满座时，自动退回 plan_patcher 再寻址。"""
     g = StateGraph(AgentState)
     g.add_node("plan_patcher", plan_patcher_node)
     g.add_node("critic", critic_node)
@@ -227,9 +256,19 @@ def build_revise_graph():
     g.add_conditional_edges(
         "critic",
         _critic_router,
-        {"dry_run": "dry_run", "planner": "dry_run"},
+        {
+            "dry_run": "dry_run",
+            "planner": "plan_patcher",
+        },
     )
-    g.add_edge("dry_run", END)
+    g.add_conditional_edges(
+        "dry_run",
+        _revise_dry_run_router,
+        {
+            "done": END,
+            "retry": "plan_patcher",
+        },
+    )
     return g.compile()
 
 

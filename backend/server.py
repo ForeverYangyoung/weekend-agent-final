@@ -230,23 +230,24 @@ def _run_planning_stream(
             if plan is not None:
                 poi_names = {s.primary.poi_id: s.primary.name for s in plan.stages}
 
-            failed_parts: list[str] = []
+            user_hints: list[str] = []
             for c in dry_failed:
                 pid = (c.args or {}).get("poi_id") or "?"
                 pname = poi_names.get(pid, pid)
-                reason = c.error or "不可用"
+                reason = c.error or "暂时订不到"
                 if c.result and c.result.get("reason"):
                     reason = str(c.result["reason"])
-                people_n = (c.args or {}).get("people", "?")
-                failed_parts.append(
-                    f"{pname}({pid}) people={people_n} → {reason}"
-                )
+                short = pname.split("（")[0].strip()
+                if "满座" in reason or "桌位" in reason:
+                    user_hints.append(f"「{short}」{reason}，正在帮您换一家相近的店")
+                elif "库存" in reason or "售罄" in reason:
+                    user_hints.append(f"「{short}」加餐暂时没货，正在调整搭配")
+                else:
+                    user_hints.append(f"「{short}」{reason}，正在自动换备选")
 
             recovery_line = trace_line(
                 "DryRun",
-                "Recovery启动 | "
-                + "；".join(failed_parts)
-                + " | action=Planner拉黑该POI并换备选(如炙烤大叔)",
+                "；".join(user_hints) or "预订没通过，正在自动换备选",
                 phase="恢复",
             )
             running_trace = list(last.get("trace") or [])
