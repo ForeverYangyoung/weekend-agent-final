@@ -188,3 +188,37 @@ class SummaryCard(BaseModel):
     title: str
     body_markdown: str
     share_text: str  # 给老婆/朋友的微信可分享文案
+
+
+# ─────────────────────────── 故障自愈 & 多人协同 ───────────────────────────
+
+
+class FailureType(str, Enum):
+    """三类可自愈故障（LangGraph 全局流实时读取）。"""
+
+    NO_SEAT = "NO_SEAT"  # 409 满座
+    NO_TICKET = "NO_TICKET"  # 404/410 售罄无票
+    CONFLICT = "CONFLICT"  # 时间重叠 / 行程超时
+
+
+class CollaborativeConsensus(BaseModel):
+    """多人协同共识槽：投票与反馈，供 HIL / Notifier 读取。"""
+
+    shared_users: list[str] = Field(
+        default_factory=lambda: ["User_A", "User_B", "User_C"]
+    )
+    votes: dict[str, dict[str, bool]] = Field(default_factory=dict)
+    feedback_notes: list[str] = Field(default_factory=list)
+
+
+class TimelineEvent(BaseModel):
+    """动态时间轴事件（Compensator 压缩用）。"""
+
+    stage_name: str
+    poi_id: str
+    name: str
+    start_time: str
+    end_time: str
+    duration_minutes: int
+    is_core_constraint: bool = False
+    weight: float = 1.0

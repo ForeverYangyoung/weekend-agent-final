@@ -334,6 +334,7 @@ CATALOG: dict[str, dict[str, list[dict[str, Any]]]] = {
                     "distance_km": 1,
                     "tags": ["烤肉", "网红打卡", "社交", "重口味"],
                     "table_type": ["4人桌"],
+                    "is_crowded": True,
                 },
             },
             {
