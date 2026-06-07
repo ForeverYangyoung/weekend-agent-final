@@ -1,18 +1,23 @@
 import type { ScenarioId } from '../scenarioPresets'
 
 interface Props {
-  greeting: string
   onScenarioSelect: (id: ScenarioId) => void
   disabled: boolean
 }
 
-export function WelcomeScreen({ greeting, onScenarioSelect, disabled }: Props) {
+export function WelcomeScreen({ onScenarioSelect, disabled }: Props) {
   return (
     <div className="ai-bubble welcome-bubble">
-      <div className="bubble-text welcome-text">{greeting}</div>
-      <div className="welcome-hint">
-        推荐先选「朋友」：只说重口味，档案会 Mock 唤醒禁辣——点右下角 Trace 可看。
-      </div>
+      <div className="welcome-title">周末出游，交给我来安排</div>
+      <p className="welcome-lead">
+        告诉我你想带家人还是朋友出去——我帮你排好 <strong>玩 → 吃 → 附加</strong>，
+        查好空位，确认后一键代订。
+      </p>
+      <ol className="welcome-steps">
+        <li>选一个场景（或底部自己输入）</li>
+        <li>看两张方案卡，不满意可微调</li>
+        <li>想看 Agent 怎么打分、怎么自愈？点右下角 <strong>Trace</strong></li>
+      </ol>
       <div className="scenario-cards">
         <button
           type="button"
@@ -32,7 +37,7 @@ export function WelcomeScreen({ greeting, onScenarioSelect, disabled }: Props) {
         >
           <div className="scenario-card-title">朋友场景</div>
           <div className="scenario-card-desc">4 人 · 重口味 · 社交聚餐</div>
-          <div className="scenario-card-tip">痔疮档案 Mock → 禁辣冲突 → 满座 Recovery</div>
+          <div className="scenario-card-tip">推荐首试：档案 Mock · 满座自愈</div>
         </button>
       </div>
     </div>

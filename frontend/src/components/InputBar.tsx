@@ -64,7 +64,7 @@ export function InputBar({ onSend, disabled, placeholder }: Props) {
         </button>
       </div>
       <div className="input-hint">
-        输入"选择"进入偏好模式 · Enter 发送
+        选场景或输入需求 · Enter 发送 · 右下角 Trace 可看执行过程
       </div>
     </div>
   )

@@ -577,15 +577,27 @@ body {
 .welcome-bubble {
   padding: 16px;
 }
-.welcome-text {
-  font-size: 15px;
-  margin-bottom: 12px;
-  white-space: pre-line;
+.welcome-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
 }
-.welcome-hint {
-  font-size: 12px;
+.welcome-lead {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+.welcome-steps {
+  margin: 0 0 14px;
+  padding-left: 1.2rem;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--text-hint);
-  margin-bottom: 6px;
+}
+.welcome-steps li + li {
+  margin-top: 4px;
 }
 .welcome-prompts {
   display: flex;

@@ -33,8 +33,6 @@ const INITIAL_MESSAGES: ChatMessage[] = [
     id: 'welcome',
     role: 'ai',
     type: 'welcome',
-    text:
-      '嗨，我是你的周末小助手。\n\n先选场景再规划；想看 Agent 怎么打分、怎么自愈，点右下角 Trace。\n朋友局推荐先试：只说重口味，Trace 里会出现跨端健康档案 Mock。满意后确认下单。',
     timestamp: Date.now(),
   },
 ]
@@ -272,7 +270,7 @@ export default function App() {
           .join(' | ')
         pushUiTrace(
           '就绪',
-          `左侧将展示 ${ev.plans?.length ?? 0} 套方案，请用户确认：${planNames}`,
+          `已生成 ${ev.plans?.length ?? 0} 套方案，请选择：${planNames}`,
         )
         if ((ev.preference_conflicts ?? []).length > 0) {
           const c = ev.preference_conflicts![0]
@@ -717,7 +715,7 @@ export default function App() {
             <div className="header-avatar">W</div>
             <div>
               <div className="header-title">Weekend Agent</div>
-              <div className="header-subtitle">周末出游助手 · HIL 在线</div>
+              <div className="header-subtitle">周末出游，一键安排</div>
             </div>
           </div>
 
@@ -727,7 +725,6 @@ export default function App() {
                 return (
                   <div key={msg.id} className="msg-row msg-ai">
                     <WelcomeScreen
-                      greeting={msg.text ?? ''}
                       onScenarioSelect={handleScenarioSelect}
                       disabled={inputDisabled}
                     />
