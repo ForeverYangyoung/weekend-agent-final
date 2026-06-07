@@ -49,8 +49,12 @@ def inject_history_archives(profile: GroupProfile, text: str) -> tuple[GroupProf
     trace_lines: list[str] = []
     evidence = list(updated.evidence)
 
-    # 家庭：老婆/孩子在控糖控卡周期
-    if any(k in text for k in ("老婆", "孩子", "娃")) or updated.scene == "family":
+    from backend.agents.profiler import has_explicit_heavy_dietary
+
+    # 家庭：老婆/孩子在控糖控卡周期（用户已显式点火锅等重口味时不叠加）
+    if (
+        any(k in text for k in ("老婆", "孩子", "娃")) or updated.scene == "family"
+    ) and not has_explicit_heavy_dietary(updated):
         added: list[str] = []
         for tag in ("低卡", "少糖"):
             if tag not in updated.dietary:
@@ -115,8 +119,16 @@ def profiler_node(state: AgentState) -> dict:
     """节点入口：返回的 dict 会被合并进 AgentState。"""
     text = state.get("user_input", "")
     history_context = state.get("history_context") or {}  # type: ignore[arg-type]
+    from backend.agents.profiler import (
+        _build_editable_tags,
+        apply_explicit_preference_priority,
+    )
+
     profile = analyze_profile(text, history_context=history_context)
     profile, archive_trace = inject_history_archives(profile, text)
+    profile = apply_explicit_preference_priority(profile)
+    has_history = any(e.source == "history" for e in profile.evidence)
+    profile.editable_tags = _build_editable_tags(profile, has_history=has_history)
 
     scene_conf = profile.confidence.get("scene", 0.0)
     tags_preview = [t.label for t in profile.editable_tags[:8]]

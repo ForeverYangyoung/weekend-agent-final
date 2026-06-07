@@ -120,6 +120,9 @@ class Plan(BaseModel):
     # 阶段顺序，例如 "玩→吃→加餐" / "吃→玩→加餐"，给评委展示「试过多种顺序」
     order_label: str = ""
     addons: list[PlanAddon] = Field(default_factory=list)
+    is_compromised: bool = False
+    compromise_message: str = ""
+    compromise_source: Literal["", "researcher_relax", "planner_fallback", "recovery"] = ""
 
 
 # ─────────────────────────── Researcher 输出 ───────────────────────────

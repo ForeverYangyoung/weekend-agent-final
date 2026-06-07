@@ -39,6 +39,14 @@ export function humanizeTraceLine(raw: string): string {
     return `UI Sync | ${body}`
   }
 
+  if (body.includes('严苛·') || body.includes('退避·')) {
+    return `Researcher · 内存自适应 · ${body}`
+  }
+
+  if (body.includes('妥协·')) {
+    return `Planner · 妥协保底 · ${body.replace('妥协·', '')}`
+  }
+
   if (body.includes('算式·图例｜')) {
     return body.replace('算式·图例｜', '')
   }

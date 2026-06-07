@@ -23,9 +23,15 @@ def researcher_node(state: AgentState) -> dict:
     if selected:
         msg += f"｜{selected}"
 
+    backoff_lines = [
+        trace_line("Researcher", line, phase="候选")
+        for line in research.tool_trace
+        if line.startswith(("严苛·", "退避·"))
+    ]
     trace = [
         *score_legend_trace_lines(),
         trace_line("Researcher", msg),
+        *backoff_lines,
         *format_research_boards(research, profile=profile),
     ]
     return {

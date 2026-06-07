@@ -42,6 +42,9 @@ _DISTRICT_NAMES: tuple[str, ...] = (
     "大兴", "顺义", "房山", "门头沟", "怀柔", "平谷", "密云", "延庆",
 )
 
+_EXPLICIT_HEAVY_DIETARY = frozenset({"火锅", "烤肉", "川菜", "湘菜", "重口味"})
+_IMPLICIT_LIGHT_DIETARY = frozenset({"低卡", "少糖", "轻食"})
+
 _CUISINE_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("川菜", "川菜"),
     ("火锅", "火锅"),
@@ -325,6 +328,20 @@ _SCENE_LABEL = {
 _PEOPLE_INTEREST_RE = re.compile(r"^\d+人?$")
 
 
+def has_explicit_heavy_dietary(profile: GroupProfile) -> bool:
+    return bool(_EXPLICIT_HEAVY_DIETARY & set(profile.dietary))
+
+
+def apply_explicit_preference_priority(profile: GroupProfile) -> GroupProfile:
+    """显式菜系/重口味优先：自动拿掉隐式档案叠加的轻食/低卡约束。"""
+    if not has_explicit_heavy_dietary(profile):
+        return profile
+    kept = [d for d in profile.dietary if d not in _IMPLICIT_LIGHT_DIETARY]
+    if len(kept) == len(profile.dietary):
+        return profile
+    return profile.model_copy(update={"dietary": kept})
+
+
 def _sanitize_profile_consistency(profile: GroupProfile) -> GroupProfile:
     """去掉人数/场景自相矛盾的画像（如 独自 + 1人 + 兴趣「3人」）。"""
     profile.interests = [
@@ -604,6 +621,7 @@ def analyze_profile(
     if has_history:
         _merge_history(profile, history_context, evidence)
 
+    profile = apply_explicit_preference_priority(profile)
     profile = _sanitize_profile_consistency(profile)
     profile.evidence = evidence
     profile.editable_tags = _build_editable_tags(profile, has_history=has_history)
@@ -670,6 +688,7 @@ def apply_profile_overrides(
             except ValueError:
                 pass
 
+    updated = apply_explicit_preference_priority(updated)
     updated = _sanitize_profile_consistency(updated)
     has_history = bool(updated.history_weights)
     updated.editable_tags = _build_editable_tags(updated, has_history=has_history)

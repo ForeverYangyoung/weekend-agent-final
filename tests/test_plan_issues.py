@@ -50,16 +50,17 @@ def test_history_archive_no_spicy_vs_heavy_friends() -> None:
     assert conflicts[0]["code"] == "no_spicy_vs_heavy"
 
 
-def test_preference_conflict_light_vs_sichuan() -> None:
+def test_explicit_sichuan_wins_over_implicit_light_archive() -> None:
+    """用户显式点川菜时，应自动拿掉档案低卡，不再拦规划。"""
     profile = analyze_profile("家庭出游，老婆减肥轻食，孩子5岁，还想吃川菜")
     profile = apply_profile_overrides(
         profile,
         [{"key": "dietary", "value": "川菜", "action": "add"}],
     )
     conflicts = detect_preference_conflicts(profile)
-    assert conflicts
-    assert conflicts[0]["code"] == "light_vs_heavy_cuisine"
-    assert "川菜" in conflicts[0]["detail"]
+    assert conflicts == []
+    assert "川菜" in profile.dietary
+    assert "低卡" not in profile.dietary
 
 
 def test_sichuan_family_explains_distance_reason_or_match() -> None:
@@ -187,7 +188,10 @@ def test_family_sichuan_keeps_sichuan_candidate_in_research() -> None:
             buf += chunk
 
     payload = _payload_from_stream(buf)
-    # 历史档案低卡 + 用户加川菜：应先暴露画像矛盾，而不是静默给错店
-    assert payload.get("preference_conflicts")
-    assert payload["preference_conflicts"][0]["code"] == "light_vs_heavy_cuisine"
-    assert payload["plans"][0]["issueKind"] == "needs_preference_fix"
+    # 历史档案低卡 + 用户加川菜：显式偏好优先，应直接出可下单方案
+    assert not payload.get("preference_conflicts")
+    primary = payload["plans"][0]
+    assert primary.get("issueKind", "ok") == "ok"
+    assert primary["isValid"] is True
+    eat_name = primary.get("eat", {}).get("name", "")
+    assert "川" in eat_name or "蜀" in eat_name

@@ -25,19 +25,30 @@ def hil_apply_overrides_node(state: AgentState) -> dict:
             "trace": [trace_line("HIL", "无覆盖项，按原画像重搜", phase="重规划")],
         }
 
+    before_dietary = set(profile.dietary)
     merged = apply_profile_overrides(profile, overrides)
     preview = [t.label for t in merged.editable_tags[:6]]
+    dropped_light = before_dietary - set(merged.dietary)
+    trace_lines = [
+        trace_line(
+            "HIL",
+            f"已应用 {len(overrides)} 项覆盖 → 重跑 Researcher；tags={preview}",
+            phase="重规划",
+        )
+    ]
+    if dropped_light & {"低卡", "少糖", "轻食"}:
+        trace_lines.append(
+            trace_line(
+                "HIL",
+                "显式偏好优先：已移除档案轻食/低卡约束，按您点的菜系重新规划",
+                phase="重规划",
+            )
+        )
 
     return {
         **clear_planning_artifacts(),
         "group_profile": merged,
         "profile_overrides": [],
         "plan_iteration": 0,
-        "trace": [
-            trace_line(
-                "HIL",
-                f"已应用 {len(overrides)} 项覆盖 → 重跑 Researcher；tags={preview}",
-                phase="重规划",
-            )
-        ],
+        "trace": trace_lines,
     }

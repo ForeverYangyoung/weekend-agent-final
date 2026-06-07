@@ -56,6 +56,10 @@ export function PlanCard({
         {!canOrder && <div className="badge-invalid">{badgeLabel}</div>}
       </div>
 
+      {plan.isCompromised && plan.compromiseMessage && (
+        <div className="plan-compromise-banner">{plan.compromiseMessage}</div>
+      )}
+
       {showIssuePanel && (
         <div className={issuePanelClass}>
           {plan.planIssues.map((issue, i) => (

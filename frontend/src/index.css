@@ -349,6 +349,29 @@ body {
   border-left: 3px solid #6b9fff;
 }
 
+.trace-line-backoff {
+  color: #ffd166;
+  background: rgba(255, 193, 70, 0.12);
+  border-left: 3px solid #ffb84d;
+}
+
+.trace-line-compromise {
+  color: #ffe08a;
+  background: rgba(255, 209, 0, 0.14);
+  border-left: 3px solid #ffd100;
+}
+
+.plan-compromise-banner {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 209, 0, 0.15);
+  border: 1px solid rgba(255, 193, 70, 0.55);
+  color: #6a5200;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .trace-line-legend-stream {
   display: none;
 }

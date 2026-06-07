@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { humanizeTraceLine, isCompareTraceLine, isUiTraceLine } from '../traceHumanize'
 import {
+  isBackoffTraceLine,
+  isCompromiseTraceLine,
   isScoreFormulaLine,
   isScoreLegendStreamLine,
   SCORE_LEGEND_LINES,
@@ -20,6 +22,12 @@ function traceLineClass(human: string, raw: string): string {
   }
   if (isScoreLegendStreamLine(raw)) {
     return 'trace-line trace-line-legend-stream'
+  }
+  if (isBackoffTraceLine(raw)) {
+    return 'trace-line trace-line-backoff trace-line-strong'
+  }
+  if (isCompromiseTraceLine(raw)) {
+    return 'trace-line trace-line-compromise trace-line-strong'
   }
   if (isScoreFormulaLine(raw)) {
     return raw.includes('算式·方案')

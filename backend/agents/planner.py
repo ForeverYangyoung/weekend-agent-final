@@ -12,12 +12,10 @@
 """
 from __future__ import annotations
 
-import json
 import math
-import re
 
 from backend.config import get_settings
-from backend.llm_client import get_llm_client, get_model_name
+from backend.llm_client import chat_json, get_llm_client, get_model_name
 from backend.schemas import (
     GroupProfile,
     Plan,
@@ -99,18 +97,6 @@ def _wants_heavy_meal(profile: GroupProfile) -> bool:
     return "重口味" in profile.dietary
 
 
-def _has_strict_constraints(profile: GroupProfile, stage_name: str) -> bool:
-    if stage_name == "吃" and (
-        _explicit_cuisines(profile)
-        or _wants_light_meal(profile)
-        or _wants_heavy_meal(profile)
-    ):
-        return True
-    if stage_name == "玩" and profile.scene == "family" and profile.kids_ages:
-        return True
-    return False
-
-
 def _passes_hard_filter(
     c: POICandidate, stage_name: str, profile: GroupProfile
 ) -> bool:
@@ -150,32 +136,60 @@ def _passes_hard_filter(
         if any(k in text for k in snack_keys):
             return False
 
-    # 3) 距离上限（researcher 已过滤一次；planner 再保险，防 stub 进来）
+    # 3) 距离绝对红线（给 1.5km 容差，超出真不行）
     d = float(c.metadata.get("distance_km", 0) or 0)
-    if d > profile.distance_limit_km + 1e-6:
+    if d > profile.distance_limit_km + 1.5:
         return False
 
     return True
+
+
+def _stage_filter_key(stage: ResearchStageResult) -> str:
+    return stage.stage_name.split("(")[0].strip()
 
 
 def _filter_stage_candidates(
     stage: ResearchStageResult,
     profile: GroupProfile,
     blocked: set[str],
-) -> list[POICandidate]:
-    """硬过滤 + 黑名单。若全砍光则回退为原始顺序（不报错，让 planner 仍能成图）。"""
+) -> tuple[list[POICandidate], str | None]:
+    """硬过滤 + 黑名单；全砍光则按综合分妥协捞底。"""
+    stage_key = _stage_filter_key(stage)
     kept = [
         c
         for c in stage.candidates
-        if c.poi_id not in blocked and _passes_hard_filter(c, stage.stage_name, profile)
+        if c.poi_id not in blocked
+        and _passes_hard_filter(c, stage_key, profile)
     ]
     if kept:
-        return kept
-    # 有硬约束时禁止回退到不合规候选（避免「标了轻食却推烤肉」）
-    if _has_strict_constraints(profile, stage.stage_name):
+        return kept, None
+
+    fallback_pool = [c for c in stage.candidates if c.poi_id not in blocked]
+    if not fallback_pool:
+        return [], None
+
+    fallback_pool.sort(
+        key=lambda x: (x.breakdown.total if x.breakdown else 0.0), reverse=True
+    )
+    best = fallback_pool[0]
+    short = best.name.split("（")[0].strip()
+    msg = (
+        f"⚠️ {stage_key}阶段妥协：您要求的条件较严，附近暂无完美匹配，"
+        f"已推荐综合分最高的「{short}」"
+    )
+    original = best.reason or ""
+    compromised = best.model_copy(
+        update={
+            "reason": f"{msg}（{original}）" if original else msg,
+        }
+    )
+    return [compromised], msg
+
+
+def _research_relaxation_messages(research: ResearchResult | None) -> list[str]:
+    if research is None:
         return []
-    fallback = [c for c in stage.candidates if c.poi_id not in blocked]
-    return fallback or list(stage.candidates)
+    return [line for line in research.tool_trace if line.startswith("退避·")]
 
 
 # ─────────────────────────── 阶段顺序枚举 ───────────────────────────
@@ -234,8 +248,8 @@ def _build_plan_with_order(
     if play_stage is None or eat_stage is None:
         return None
 
-    play_pool = _filter_stage_candidates(play_stage, profile, blocked)
-    eat_pool = _filter_stage_candidates(eat_stage, profile, blocked)
+    play_pool, play_comp = _filter_stage_candidates(play_stage, profile, blocked)
+    eat_pool, eat_comp = _filter_stage_candidates(eat_stage, profile, blocked)
     if not play_pool or not eat_pool:
         return None
 
@@ -287,6 +301,15 @@ def _build_plan_with_order(
     )
     plan.summary = _summary(profile.scene, final_stages, order_label)
     plan.score = _plan_score_math(plan)
+    compromise_notes = [n for n in (play_comp, eat_comp) if n]
+    if compromise_notes:
+        plan = plan.model_copy(
+            update={
+                "is_compromised": True,
+                "compromise_message": " ".join(compromise_notes),
+                "compromise_source": "planner_fallback",
+            }
+        )
     return plan
 
 
@@ -421,8 +444,8 @@ def build_plans(
     if play_stage is None or eat_stage is None:
         return []
 
-    play_pool = _filter_stage_candidates(play_stage, profile, blocked)
-    eat_pool = _filter_stage_candidates(eat_stage, profile, blocked)
+    play_pool, _ = _filter_stage_candidates(play_stage, profile, blocked)
+    eat_pool, _ = _filter_stage_candidates(eat_stage, profile, blocked)
     if not play_pool or not eat_pool:
         return []
 
@@ -468,7 +491,30 @@ def build_plans(
             if len(selected) >= top_k:
                 break
 
-    return selected
+    return [_merge_research_compromise(p, research) for p in selected]
+
+
+def _merge_research_compromise(plan: Plan, research: ResearchResult) -> Plan:
+    if not _research_relaxation_messages(research):
+        return plan
+    relax_text = (
+        "⚠️ 严苛筛选后候选不足，已在内存放宽距离+3km、预算+30% 后重新排序。"
+    )
+    if plan.is_compromised:
+        if relax_text in plan.compromise_message:
+            return plan
+        return plan.model_copy(
+            update={
+                "compromise_message": f"{relax_text} {plan.compromise_message}",
+            }
+        )
+    return plan.model_copy(
+        update={
+            "is_compromised": True,
+            "compromise_message": relax_text,
+            "compromise_source": "researcher_relax",
+        }
+    )
 
 
 # ─────────────────────────── 顺路活动搜索建议 ───────────────────────────
@@ -524,10 +570,10 @@ def _suggest_insertions_llm(plan: Plan, profile: GroupProfile, client) -> list[d
         "2. 时长 ≤15min 才能在路途间隙完成\n"
         "3. 插入后不耽误主要行程\n"
         "4. 不需要搜索的行为（拍照、洗手间等）直接跳过\n\n"
-        "只输出一个 JSON 数组，每项格式：\n"
+        '只输出一个 JSON 对象，格式：{"requests": [...]}，数组每项：\n'
         '{"stage": "加餐", "scene": "family", "limit": 5, "reason": "理由 ≤15字", '
         '"behavior_id": "行为ID", "behavior_name": "行为名称"}\n'
-        "不要输出任何其他文字。"
+        "必须返回纯 JSON，不要包含 ```json markdown 标签。"
     )
 
     user = (
@@ -544,35 +590,17 @@ def _suggest_insertions_llm(plan: Plan, profile: GroupProfile, client) -> list[d
         f"\n可插入行为目录:\n{catalog_text}"
     )
 
-    model = get_model_name()
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.3,
-        )
-        content = resp.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"[suggest_insertions] LLM 调用失败: {e}，回退到规则")
-        return _suggest_insertions_rules(plan, profile)
-
-    # 解析 JSON（LLM 可能带 markdown 代码块包装）
-    try:
-        requests = json.loads(content)
+        parsed = chat_json(client, system=system, user=user, temperature=0.1)
+        if isinstance(parsed, dict):
+            requests = parsed.get("requests", parsed)
+        else:
+            requests = parsed
         if isinstance(requests, list):
             return requests
-    except json.JSONDecodeError:
-        m = re.search(r"\[.*\]", content, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group())
-            except json.JSONDecodeError:
-                pass
+    except Exception as e:
+        print(f"[suggest_insertions] LLM 调用/解析失败: {e}，回退到规则")
 
-    print(f"[suggest_insertions] LLM 返回无法解析，回退到规则。原始: {content[:200]}")
     return _suggest_insertions_rules(plan, profile)
 
 

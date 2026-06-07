@@ -24,6 +24,10 @@ from backend.tools.http_client import search_poi
 
 _TOP_K = 3
 _TOP_K_EAT_WITH_HARD_CONSTRAINT = 8
+_BASE_POOL_LIMIT = 20
+_STRICT_MIN_CANDIDATES = 2
+_RELAX_DISTANCE_KM = 3.0
+_RELAX_BUDGET_FACTOR = 1.3
 
 _WEIGHTS: dict[str, float] = {
     "preference": 0.35,
@@ -53,24 +57,18 @@ def run_initial_research(profile: GroupProfile | None) -> ResearchResult:
 
     for stage_name in ("玩", "吃"):
         try:
-            raw = search_poi(scene=scene_key, stage=stage_name, limit=10)
+            ranked, stage_trace = _in_memory_adaptive_search(
+                scene_key, stage_name, profile
+            )
+            trace.extend(stage_trace)
         except ToolError as e:
             trace.append(
                 f"GET /poi/search(stage={stage_name}) → {e.code} {e.message}"
             )
             continue
 
-        candidates = [_to_candidate(it) for it in raw]
-        if not candidates:
-            trace.append(f"GET /poi/search(stage={stage_name}) → 0")
-            continue
-
-        ranked = _rank_and_filter(candidates, profile, stage_name)
         if not ranked:
-            trace.append(
-                f"GET /poi/search(stage={stage_name}) → {len(candidates)}，"
-                f"过滤后 0（distance_limit={profile.distance_limit_km}）"
-            )
+            trace.append(f"GET /poi/search(stage={stage_name}) → 0")
             continue
 
         top = ranked[0]
@@ -121,24 +119,19 @@ def run_targeted_research(
         reason = req.get("reason", "")
 
         try:
-            raw = search_poi(scene=scene, stage=stage_name, limit=limit)
+            pool_limit = max(limit, _BASE_POOL_LIMIT)
+            ranked, stage_trace = _in_memory_adaptive_search(
+                scene, stage_name, profile, pool_limit=pool_limit
+            )
+            trace.extend(f"targeted({reason}): {line}" for line in stage_trace)
         except ToolError as e:
             trace.append(
                 f"targeted: {reason} → {e.code} {e.message}"
             )
             continue
 
-        candidates = [_to_candidate(it) for it in raw]
-        if not candidates:
-            trace.append(f"targeted: {reason} → 0")
-            continue
-
-        ranked = _rank_and_filter(candidates, profile, stage_name)
         if not ranked:
-            trace.append(
-                f"targeted: {reason} → {len(candidates)} raw, "
-                f"过滤后 0（distance_limit={profile.distance_limit_km}）"
-            )
+            trace.append(f"targeted: {reason} → 0")
             continue
 
         top = ranked[0]
@@ -158,6 +151,48 @@ def run_targeted_research(
 
 
 # ─────────────────────────── 辅助函数 ───────────────────────────
+
+
+def _relaxed_profile(profile: GroupProfile) -> GroupProfile:
+    relaxed = profile.model_copy(deep=True)
+    relaxed.distance_limit_km += _RELAX_DISTANCE_KM
+    if relaxed.budget_per_person:
+        relaxed.budget_per_person = int(relaxed.budget_per_person * _RELAX_BUDGET_FACTOR)
+    return relaxed
+
+
+def _in_memory_adaptive_search(
+    scene_key: str,
+    stage_name: str,
+    profile: GroupProfile,
+    *,
+    pool_limit: int = _BASE_POOL_LIMIT,
+) -> tuple[list[POICandidate], list[str]]:
+    """一次 HTTP 拉池，严苛打分不足则在内存退避重排。"""
+    trace: list[str] = []
+    raw = search_poi(scene=scene_key, stage=stage_name, limit=pool_limit)
+    candidates = [_to_candidate(it) for it in raw]
+    if not candidates:
+        return [], trace
+
+    ranked_strict = _rank_and_filter(candidates, profile, stage_name)
+    trace.append(
+        f"严苛·{stage_name}｜池{len(candidates)}｜严苛排序后{len(ranked_strict)}家"
+    )
+    if len(ranked_strict) >= _STRICT_MIN_CANDIDATES:
+        return ranked_strict, trace
+
+    relaxed = _relaxed_profile(profile)
+    ranked_relaxed = _rank_and_filter(candidates, relaxed, stage_name)
+    budget_note = ""
+    if profile.budget_per_person and relaxed.budget_per_person:
+        budget_note = f"·预算 {profile.budget_per_person}→{relaxed.budget_per_person}"
+    trace.append(
+        f"退避·{stage_name}｜严苛不足(<{_STRICT_MIN_CANDIDATES})｜"
+        f"距离 {profile.distance_limit_km:g}→{relaxed.distance_limit_km:g}km{budget_note}｜"
+        f"内存重排后{len(ranked_relaxed)}家"
+    )
+    return ranked_relaxed or ranked_strict, trace
 
 
 def _to_candidate(item: dict[str, Any]) -> POICandidate:

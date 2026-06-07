@@ -96,6 +96,14 @@ def format_plan_board(
                 primary=primary_plan if i > 1 else None,
             )
         )
+        if plan.is_compromised and plan.compromise_message:
+            lines.append(
+                trace_line(
+                    "Planner",
+                    f"妥协·方案#{i}｜{plan.compromise_message}",
+                    phase=phase,
+                )
+            )
     if len(plans) >= 2:
         p0 = " → ".join(s.primary.name for s in plans[0].stages)
         p1 = " → ".join(s.primary.name for s in plans[1].stages)

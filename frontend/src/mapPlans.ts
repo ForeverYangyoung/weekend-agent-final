@@ -175,6 +175,9 @@ export function mapPlansFromBackend(plans: BackendPlanPayload[]): DisplayPlan[] 
       allowAcceptAlternative: p.allowAcceptAlternative ?? false,
       constraintIssues,
       isValid: (p.isValid ?? true) && extraIssues.length === 0,
+      isCompromised: p.isCompromised ?? false,
+      compromiseMessage: p.compromiseMessage ?? '',
+      compromiseSource: p.compromiseSource ?? '',
     }
   })
 }

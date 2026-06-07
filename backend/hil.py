@@ -261,6 +261,13 @@ def detect_preference_conflicts(profile: GroupProfile | None) -> list[dict[str, 
             }
         )
 
+    if heavy_cuisines or "重口味" in profile.dietary:
+        conflicts = [
+            c
+            for c in conflicts
+            if c.get("code") not in {"light_vs_heavy_cuisine", "light_vs_heavy_taste"}
+        ]
+
     return conflicts
 
 
@@ -515,6 +522,9 @@ def plan_to_display(
         ),
         "constraintIssues": constraint_issues,
         "isValid": is_valid,
+        "isCompromised": plan.is_compromised,
+        "compromiseMessage": plan.compromise_message,
+        "compromiseSource": plan.compromise_source,
     }
 
     if plan_id != "primary" and primary is not None:

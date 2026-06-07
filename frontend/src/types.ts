@@ -68,6 +68,9 @@ export interface BackendPlanPayload {
   allowAcceptAlternative?: boolean
   constraintIssues?: string[]
   isValid?: boolean
+  isCompromised?: boolean
+  compromiseMessage?: string
+  compromiseSource?: string
   diffSummary?: string
   play?: { name: string; time: string; desc: string; tags: string[]; priceLabel?: string; distanceLabel?: string }
   eat?: { name: string; time: string; desc: string; tags: string[]; priceLabel?: string; distanceLabel?: string }
@@ -198,6 +201,9 @@ export interface DisplayPlan {
   allowAcceptAlternative: boolean
   constraintIssues: string[]
   isValid: boolean
+  isCompromised?: boolean
+  compromiseMessage?: string
+  compromiseSource?: string
 }
 
 export interface PanelPreferences {
