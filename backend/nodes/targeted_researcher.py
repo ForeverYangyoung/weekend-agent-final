@@ -30,7 +30,9 @@ def targeted_researcher_node(state: AgentState) -> dict:
     if selected:
         msg += f"｜{selected}"
 
-    board_lines = format_research_boards(research, top_n=3, role="TargetedResearcher")
+    board_lines = format_research_boards(
+        research, top_n=3, role="TargetedResearcher", profile=profile, score_formula_top=0
+    )
     return {
         "targeted_research_result": research,
         "trace": [trace_line("TargetedResearcher", msg), *board_lines],

@@ -17,7 +17,7 @@ import { PlanCards } from './components/PlanCards'
 import { PreferencePanel } from './components/PreferencePanel'
 import { ProfileChips } from './components/ProfileChips'
 import { ScenarioSetup } from './components/ScenarioSetup'
-import { AgentDashboard } from './components/AgentDashboard'
+import { TracePanel } from './components/TracePanel'
 import { HilInterruptModal } from './components/HilInterruptModal'
 import { humanizeRecoveryReason, traceHadAutoRecovery } from './recoveryCopy'
 import { uiTraceLine } from './traceUi'
@@ -693,10 +693,10 @@ export default function App() {
         >
           ← 返回规划界面
         </button>
-        <AgentDashboard
-          currentNode={currentNode}
-          agentLogs={agentLogs}
-          isProcessing={appState === 'streaming' || isReplanning}
+        <TracePanel
+          lines={agentLogs}
+          currentStep={currentNode}
+          live={appState === 'streaming' || isReplanning}
         />
       </div>
     )

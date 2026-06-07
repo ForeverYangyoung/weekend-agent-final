@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 
 from backend.config import get_settings
@@ -190,13 +191,6 @@ def _determine_orders(profile: GroupProfile) -> list[tuple[str, ...]]:
     return [("玩", "吃")]
 
 
-def _play_eat_distance_ok(play: POICandidate, eat: POICandidate) -> bool:
-    """玩/吃两地距离（相对 home 偏移）不超过阈值，保证顺路。"""
-    d_play = float(play.metadata.get("distance_km", 0) or 0)
-    d_eat = float(eat.metadata.get("distance_km", 0) or 0)
-    return abs(d_play - d_eat) <= _MAX_PLAY_EAT_DIST_KM
-
-
 def _candidate_rank(c: POICandidate) -> float:
     if c.breakdown is not None:
         return c.breakdown.total
@@ -207,12 +201,13 @@ def _iter_play_eat_pairs(
     play_pool: list[POICandidate],
     eat_pool: list[POICandidate],
 ) -> list[tuple[POICandidate, POICandidate]]:
-    pairs: list[tuple[POICandidate, POICandidate]] = []
-    for play in play_pool:
-        for eat in eat_pool:
-            if _play_eat_distance_ok(play, eat):
-                pairs.append((play, eat))
-    pairs.sort(key=lambda pe: (_candidate_rank(pe[0]) + _candidate_rank(pe[1])) / 2, reverse=True)
+    pairs: list[tuple[POICandidate, POICandidate]] = [
+        (play, eat) for play in play_pool for eat in eat_pool
+    ]
+    pairs.sort(
+        key=lambda pe: (_candidate_rank(pe[0]) + _candidate_rank(pe[1])) / 2,
+        reverse=True,
+    )
     return pairs
 
 
@@ -249,9 +244,6 @@ def _build_plan_with_order(
         if pair is None:
             return None
         play, eat = pair
-    elif not _play_eat_distance_ok(play, eat):
-        return None
-
     start = profile.start_time or "14:00"
     cursor = start
     stage_objs: dict[str, PlanStage] = {}
@@ -294,7 +286,7 @@ def _build_plan_with_order(
         order_label=order_label,
     )
     plan.summary = _summary(profile.scene, final_stages, order_label)
-    plan.score = _plan_score(plan)
+    plan.score = _plan_score_math(plan)
     return plan
 
 
@@ -370,7 +362,7 @@ def attach_hil_addons(
     if stages != plan.stages:
         updated.total_cost_estimate = _estimate_cost(profile.people_count, stages)
         updated.summary = _summary(profile.scene, stages, order_label)
-        updated.score = _plan_score(updated)
+        updated.score = _plan_score_math(updated)
     return updated
 
 
@@ -383,15 +375,29 @@ def merge_targeted_addon(
     return attach_hil_addons(plan, profile, targeted)
 
 
-def _plan_score(plan: Plan) -> float:
-    """方案总分 = 各 stage.primary.breakdown.total 的均值，缺失视为 0.5。"""
+def _plan_score_math(plan: Plan) -> float:
+    """全局方案打分：引入玩/吃物理距离差的指数惩罚（Global Cohesion）。"""
     if not plan.stages:
         return 0.0
-    parts: list[float] = []
-    for s in plan.stages:
-        bd = s.primary.breakdown
-        parts.append(bd.total if bd else 0.5)
-    return round(sum(parts) / len(parts), 3)
+
+    base_avg = sum(
+        s.primary.breakdown.total if s.primary.breakdown else 0.5
+        for s in plan.stages
+    ) / len(plan.stages)
+
+    play_stage = next((s for s in plan.stages if s.name == "玩"), None)
+    eat_stage = next((s for s in plan.stages if s.name == "吃"), None)
+
+    penalty = 0.0
+    if play_stage and eat_stage:
+        d_play = float(play_stage.primary.metadata.get("distance_km", 0) or 0)
+        d_eat = float(eat_stage.primary.metadata.get("distance_km", 0) or 0)
+        distance_gap = abs(d_play - d_eat)
+        if distance_gap > _MAX_PLAY_EAT_DIST_KM:
+            penalty = 1.0 - math.exp(-0.5 * (distance_gap - _MAX_PLAY_EAT_DIST_KM))
+
+    final_score = base_avg * (1.0 - penalty * 0.4)
+    return round(max(0.0, final_score), 3)
 
 
 # ─────────────────────────── Top-K 入口 ───────────────────────────

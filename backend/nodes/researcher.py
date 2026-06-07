@@ -6,6 +6,7 @@ from backend.agents import run_initial_research
 from backend.roles import trace_line
 from backend.state import AgentState
 from backend.trace_compare import format_research_boards
+from backend.trace_score import score_legend_trace_lines
 
 
 def researcher_node(state: AgentState) -> dict:
@@ -22,7 +23,11 @@ def researcher_node(state: AgentState) -> dict:
     if selected:
         msg += f"｜{selected}"
 
-    trace = [trace_line("Researcher", msg), *format_research_boards(research)]
+    trace = [
+        *score_legend_trace_lines(),
+        trace_line("Researcher", msg),
+        *format_research_boards(research, profile=profile),
+    ]
     return {
         "research_result": research,
         "trace": trace,

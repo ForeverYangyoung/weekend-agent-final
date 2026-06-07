@@ -39,6 +39,18 @@ export function humanizeTraceLine(raw: string): string {
     return `UI Sync | ${body}`
   }
 
+  if (body.includes('算式·图例｜')) {
+    return body.replace('算式·图例｜', '')
+  }
+
+  if (body.includes('算式·POI｜')) {
+    return body.replace('算式·POI｜', 'POI · ')
+  }
+
+  if (body.includes('算式·方案｜')) {
+    return body.replace('算式·方案｜', '方案 · ')
+  }
+
   if (body.includes('对比·')) {
     return body.replace(/对比·/g, 'COMPARE | ')
   }

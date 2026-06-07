@@ -295,6 +295,64 @@ body {
   line-height: 1.65;
 }
 
+.trace-score-legend {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 209, 0, 0.08);
+  border: 1px solid rgba(255, 209, 0, 0.35);
+  font-family: var(--font);
+  font-size: 11px;
+  line-height: 1.55;
+  color: #e8dfc0;
+}
+
+.trace-score-legend-title {
+  font-weight: 700;
+  font-size: 12px;
+  color: #ffd100;
+  margin-bottom: 6px;
+}
+
+.trace-score-legend-section {
+  font-weight: 700;
+  color: #ffe566;
+  margin-top: 6px;
+}
+
+.trace-score-legend-section:first-of-type {
+  margin-top: 0;
+}
+
+.trace-score-legend-item {
+  color: #c9c0a8;
+  padding-left: 4px;
+}
+
+.trace-line-score {
+  font-size: 12px;
+  line-height: 1.65;
+  padding: 6px 9px;
+  border-radius: 6px;
+  margin-bottom: 6px;
+}
+
+.trace-line-score-poi {
+  color: #b8e6c8;
+  background: rgba(80, 180, 120, 0.12);
+  border-left: 3px solid #5ecf8f;
+}
+
+.trace-line-score-plan {
+  color: #c8d8ff;
+  background: rgba(90, 130, 220, 0.14);
+  border-left: 3px solid #6b9fff;
+}
+
+.trace-line-legend-stream {
+  display: none;
+}
+
 /* ===== Scenario Cards ===== */
 .scenario-cards {
   display: flex;

@@ -1,5 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { humanizeTraceLine, isCompareTraceLine, isUiTraceLine } from '../traceHumanize'
+import {
+  isScoreFormulaLine,
+  isScoreLegendStreamLine,
+  SCORE_LEGEND_LINES,
+} from '../traceScoreLegend'
 import { stepLabel } from '../traceUi'
 
 interface Props {
@@ -12,6 +17,14 @@ function traceLineClass(human: string, raw: string): string {
   const text = `${human} ${raw}`
   if (isUiTraceLine(raw)) {
     return 'trace-line trace-line-ui'
+  }
+  if (isScoreLegendStreamLine(raw)) {
+    return 'trace-line trace-line-legend-stream'
+  }
+  if (isScoreFormulaLine(raw)) {
+    return raw.includes('算式·方案')
+      ? 'trace-line trace-line-score trace-line-score-plan'
+      : 'trace-line trace-line-score trace-line-score-poi'
   }
   if (/历史档案唤醒|History Archive/i.test(raw)) {
     return 'trace-line trace-line-recovery trace-line-strong'
@@ -40,33 +53,58 @@ function traceLineClass(human: string, raw: string): string {
   return 'trace-line'
 }
 
+function ScoreLegendBox({ show }: { show: boolean }) {
+  if (!show) return null
+  return (
+    <div className="trace-score-legend">
+      <div className="trace-score-legend-title">打分算式图例（各项含义）</div>
+      {SCORE_LEGEND_LINES.map((line) => (
+        <div
+          key={line}
+          className={
+            line.startsWith('【')
+              ? 'trace-score-legend-section'
+              : 'trace-score-legend-item'
+          }
+        >
+          {line}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function TracePanel({ lines, live, currentStep }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const hasScoreContent = lines.some(isScoreFormulaLine)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [lines.length])
 
+  const displayLines = lines.filter((line) => !isScoreLegendStreamLine(line))
+
   return (
     <div className="trace-panel">
       <div className="trace-panel-header">
         <div>
-          <div className="trace-panel-title">Agent 执行 Trace（专业版）</div>
+          <div className="trace-panel-title">Agent 执行 Trace</div>
           <div className="trace-panel-subtitle">
             {currentStep
               ? `当前步骤：${stepLabel(currentStep)}`
-              : 'Profiler → Researcher → Planner/Critic → DryRun → Executor'}
+              : 'Profiler → Researcher → Planner → DryRun → 确认'}
           </div>
         </div>
         {live && <span className="trace-live-badge">进行中</span>}
       </div>
       <div className="trace-panel-body">
-        {lines.length === 0 ? (
+        <ScoreLegendBox show={hasScoreContent} />
+        {displayLines.length === 0 ? (
           <div className="trace-empty">
-            左侧选择场景或开始规划后，这里会按步骤追加 Trace（含 Zero-Skill Mock 档案行 / 对比 / 预检恢复）。
+            左侧选择场景或开始规划后，这里会按步骤追加 Trace；出现算式行后，顶部图例会说明每项含义。
           </div>
         ) : (
-          lines.map((line, i) => {
+          displayLines.map((line, i) => {
             const human = humanizeTraceLine(line)
             return (
               <div key={`${i}-${line.slice(0, 32)}`} className={traceLineClass(human, line)}>
@@ -75,6 +113,7 @@ export function TracePanel({ lines, live, currentStep }: Props) {
             )
           })
         )}
+        {live && <div className="agent-log-cursor">█ 思考规划中...</div>}
         <div ref={bottomRef} />
       </div>
     </div>

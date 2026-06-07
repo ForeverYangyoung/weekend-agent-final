@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from backend.roles import trace_line
-from backend.schemas import POICandidate, Plan, ResearchResult
+from backend.schemas import GroupProfile, POICandidate, Plan, ResearchResult
+from backend.trace_score import format_plan_score_lines, format_poi_score_lines
 
 
 def _candidate_score(c: POICandidate) -> float:
@@ -38,12 +39,25 @@ def format_research_boards(
     *,
     top_n: int = 5,
     role: str = "Researcher",
+    profile: GroupProfile | None = None,
+    score_formula_top: int = 3,
 ) -> list[str]:
     lines: list[str] = []
     for stage in research.stages:
         lines.append(
             format_candidate_board(stage.stage_name, stage.candidates, top_n=top_n, role=role)
         )
+        if score_formula_top > 0:
+            for i, c in enumerate(stage.candidates[:score_formula_top], start=1):
+                lines.extend(
+                    format_poi_score_lines(
+                        c,
+                        stage.stage_name,
+                        rank=i,
+                        profile=profile,
+                        role=role,
+                    )
+                )
     return lines
 
 
@@ -63,6 +77,7 @@ def format_plan_board(
             )
         )
     phase = "重规划" if iteration > 0 else "候选"
+    primary_plan = plans[0] if plans else None
     for i, plan in enumerate(plans, start=1):
         venues = " → ".join(s.primary.name for s in plan.stages)
         poi_ids = "、".join(s.primary.poi_id for s in plan.stages)
@@ -71,6 +86,14 @@ def format_plan_board(
                 "Planner",
                 f"对比·方案#{i} score={plan.score:.2f} | {venues} | poi=[{poi_ids}]",
                 phase=phase,
+            )
+        )
+        lines.extend(
+            format_plan_score_lines(
+                plan,
+                rank=i,
+                iteration=iteration,
+                primary=primary_plan if i > 1 else None,
             )
         )
     if len(plans) >= 2:
