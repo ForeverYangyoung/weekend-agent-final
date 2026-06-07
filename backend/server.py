@@ -22,7 +22,7 @@ from backend.graph import (
     replan_graph,
     revise_graph,
 )
-from backend.schemas import ToolStatus
+from backend.schemas import FailureType, ToolStatus
 from backend.hil import (
     BUILD_VERSION,
     build_plans_payload,
@@ -367,6 +367,47 @@ def health() -> dict[str, object]:
     }
 
 
+def _recover_dry_run_failures(
+    state: AgentState,
+    *,
+    fresh: bool = False,
+) -> AgentState:
+    """预检失败时走 compensator 换店并再预检（确认下单 / 微调共用）。"""
+    from backend.nodes.compensator import compensator_node
+    from backend.nodes.dry_run import dry_run_node
+
+    running: AgentState = dict(state)
+    if fresh:
+        running["dry_run_calls"] = []
+        running["current_failure_type"] = None
+
+    max_recover = get_settings().max_plan_iterations
+    for _ in range(max_recover + 1):
+        if not running.get("dry_run_calls"):
+            dry_out = dry_run_node(running)
+            running = {**running, **dry_out}  # type: ignore[misc]
+
+        dry_calls = running.get("dry_run_calls") or []
+        dry_failed = any(c.status == ToolStatus.FAILED for c in dry_calls)
+        has_conflict = running.get("current_failure_type") == FailureType.CONFLICT
+        if not dry_failed and not has_conflict:
+            return running
+
+        comp_out = compensator_node(running)
+        running = {**running, **comp_out}  # type: ignore[misc]
+        if comp_out.get("require_human_interrupt"):
+            break
+        running["dry_run_calls"] = []
+        running["current_failure_type"] = None
+
+    return running
+
+
+def _preflight_selected_plan(state: AgentState) -> AgentState:
+    """确认下单前：按用户选定 plan 重新预检，满座则再走 compensator 自愈。"""
+    return _recover_dry_run_failures(state, fresh=True)
+
+
 @app.post("/v1/agent/confirm")
 def confirm_agent(req: ConfirmAgentRequest) -> dict[str, object]:
     state = get_session(req.session_id)
@@ -383,6 +424,15 @@ def confirm_agent(req: ConfirmAgentRequest) -> dict[str, object]:
         state["selected_addon_ids"] = [a.addon_id for a in plan.addons]
     else:
         state["selected_addon_ids"] = []
+
+    state = _preflight_selected_plan(state)
+    dry_calls = state.get("dry_run_calls") or []
+    if any(c.status == ToolStatus.FAILED for c in dry_calls):
+        save_session(req.session_id, state)
+        raise HTTPException(
+            status_code=409,
+            detail="所选方案预检未通过（可能满座或时间冲突），请换一套方案或重新规划",
+        )
 
     try:
         final: AgentState = execution_graph.invoke(state)  # type: ignore[arg-type]
@@ -426,27 +476,46 @@ def revise_plan(req: RevisePlanRequest) -> dict[str, object]:
     state["revise_feedback"] = req.feedback.strip()
     state["revise_locked_stages"] = list(req.locked_stages)
     state["selected_addon_ids"] = list(req.selected_addon_ids)
-    state["plan_snapshots"] = list(req.revision_history)
+    history = list(req.revision_history)
+    old_plan = state.get("plan")
+    if old_plan is not None:
+        old_json = _json_safe(old_plan)
+        if not history or history[-1] != old_json:
+            history.append(old_json)
+    state["plan_snapshots"] = history
     state["trace"] = list(base.get("trace") or [])
+    state["revise_pass"] = 0
 
     try:
         revised: AgentState = revise_graph.invoke(state)  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+    revised = _recover_dry_run_failures(revised, fresh=False)
+
     dry_calls = revised.get("dry_run_calls") or []
     dry_failed = [c for c in dry_calls if c.status == ToolStatus.FAILED]
     if dry_failed:
         reasons = "；".join((c.error or "预检失败") for c in dry_failed[:2])
-        raise HTTPException(status_code=409, detail=f"微调后预检未通过：{reasons}")
+        save_session(req.session_id, revised)
+        raise HTTPException(
+            status_code=409,
+            detail=f"微调后预检未通过：{reasons}（附近暂无更多可订餐厅，请放宽条件或重新规划）",
+        )
+
+    from backend.revise_utils import refresh_revised_plan_bundle
+
+    revised = {**revised, **refresh_revised_plan_bundle(revised)}
 
     plan_obj = revised.get("plan")
     if not plan_obj:
         raise HTTPException(status_code=500, detail="微调后未生成可用方案")
 
-    history = list(req.revision_history)
-    history.append(_json_safe(plan_obj))
-    revised["plan_snapshots"] = history
+    final_history = list(history)
+    new_json = _json_safe(plan_obj)
+    if not final_history or final_history[-1] != new_json:
+        final_history.append(new_json)
+    revised["plan_snapshots"] = final_history
     save_session(req.session_id, revised)
 
     revise_events = revised.get("revise_events") or []
@@ -457,7 +526,7 @@ def revise_plan(req: RevisePlanRequest) -> dict[str, object]:
         "updated_plan": _json_safe(plan_obj),
         "alternative_plans": _json_safe(revised.get("plan_alternatives") or []),
         "plans": build_plans_payload(revised),
-        "plan_snapshots": history,
+        "plan_snapshots": final_history,
         "plan_events": [
             {
                 "event_type": e.get("event_type", "plan_created"),

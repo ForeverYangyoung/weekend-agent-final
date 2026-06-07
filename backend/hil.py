@@ -50,6 +50,10 @@ def clear_planning_artifacts() -> dict[str, Any]:
         "user_confirmed": False,
         "selected_addon_ids": [],
         "force_failure": None,
+        "anomaly_encountered": [],
+        "current_failure_type": None,
+        "compensator_retry": None,
+        "current_plan": {},
     }
 
 
@@ -77,6 +81,9 @@ def select_plan(state: AgentState, plan_id: str) -> AgentState:
     rest = [plan] + [a for i, a in enumerate(alts) if i != idx]
     updated["plan"] = chosen
     updated["plan_alternatives"] = rest
+    # 切换方案后必须按新 plan 重新预检，禁止复用上一套的 dry_run_calls
+    updated["dry_run_calls"] = []
+    updated["current_failure_type"] = None
     return updated
 
 
@@ -299,12 +306,23 @@ def _eat_candidates_matching_near_play(
     return matches
 
 
-def _validate_plan_constraints(plan: Plan, profile: GroupProfile | None) -> list[str]:
+def _validate_plan_constraints(
+    plan: Plan,
+    profile: GroupProfile | None,
+    *,
+    blocked_poi_ids: set[str] | None = None,
+) -> list[str]:
     """原始约束校验文案（供内部分类）。"""
     if profile is None:
         return []
 
     issues: list[str] = []
+    blocked = blocked_poi_ids or set()
+    for stage in plan.stages:
+        if stage.primary.poi_id in blocked:
+            short = _short_poi_name(stage.primary.name)
+            issues.append(f"预订不可用：{short} 已满座/不可订")
+
     play = _stage_by_name(plan, "玩")
     eat = _stage_by_name(plan, "吃")
 
@@ -338,6 +356,8 @@ def _build_plan_issues(
     profile: GroupProfile | None,
     research: ResearchResult | None,
     pref_conflicts: list[dict[str, Any]],
+    *,
+    blocked_poi_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str, bool]:
     """把校验结果翻成用户可理解的 issue，并给出 issueKind。"""
     if profile is None:
@@ -359,7 +379,9 @@ def _build_plan_issues(
             False,
         )
 
-    raw_issues = _validate_plan_constraints(plan, profile)
+    raw_issues = _validate_plan_constraints(
+        plan, profile, blocked_poi_ids=blocked_poi_ids
+    )
     if not raw_issues:
         return [], "ok", True
 
@@ -373,6 +395,23 @@ def _build_plan_issues(
     allow_accept = False
 
     for raw in raw_issues:
+        if raw.startswith("预订不可用："):
+            short = raw.split("：", 1)[-1].strip()
+            structured.append(
+                {
+                    "code": "poi_unavailable",
+                    "headline": "这家店刚才预检已满座",
+                    "detail": (
+                        f"{raw}。系统已为主推荐方案自动换店；"
+                        f"若仍看到此店，请刷新或选已标黄条的替代方案。"
+                    ),
+                    "suggestions": ["选择左侧已自动换店的推荐方案", "或点「重新规划」"],
+                    "allowAcceptAlternative": False,
+                }
+            )
+            issue_kind = "blocked"
+            continue
+
         if raw.startswith("菜系约束未满足：") and play and eat:
             missing = raw.split("不匹配 ", 1)[-1].strip()
             eat_short = _short_poi_name(eat_name)
@@ -497,13 +536,14 @@ def plan_to_display(
     primary: Plan | None = None,
     research: ResearchResult | None = None,
     pref_conflicts: list[dict[str, Any]] | None = None,
+    blocked_poi_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """前端行程卡 JSON。"""
     stage_map = {"玩": "play", "吃": "eat", "加餐": "addon"}
     match_reasons = _build_match_reasons(plan, profile)
     conflicts = pref_conflicts if pref_conflicts is not None else detect_preference_conflicts(profile)
     plan_issues, issue_kind, is_valid = _build_plan_issues(
-        plan, profile, research, conflicts
+        plan, profile, research, conflicts, blocked_poi_ids=blocked_poi_ids
     )
     constraint_issues = [i["detail"] for i in plan_issues]
     payload: dict[str, Any] = {
@@ -563,10 +603,13 @@ def plan_to_display(
 
 
 def build_plans_payload(state: AgentState) -> list[dict[str, Any]]:
+    from backend.constraints_util import blocked_poi_ids as _blocked_poi_ids
+
     profile = state.get("group_profile")
     people = profile.people_count if profile else 1
     research = state.get("research_result")
     pref_conflicts = detect_preference_conflicts(profile)
+    blocked = _blocked_poi_ids(state.get("anomaly_encountered"))
     items: list[dict[str, Any]] = []
 
     plan = state.get("plan")
@@ -580,6 +623,7 @@ def build_plans_payload(state: AgentState) -> list[dict[str, Any]]:
                 primary=None,
                 research=research,
                 pref_conflicts=pref_conflicts,
+                blocked_poi_ids=blocked,
             )
         )
 
@@ -593,6 +637,7 @@ def build_plans_payload(state: AgentState) -> list[dict[str, Any]]:
                 primary=plan,
                 research=research,
                 pref_conflicts=pref_conflicts,
+                blocked_poi_ids=blocked,
             )
         )
 

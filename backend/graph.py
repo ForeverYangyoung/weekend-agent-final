@@ -39,7 +39,7 @@ from backend.nodes import (
 )
 
 _hil_apply = hil_apply_overrides_node
-from backend.schemas import ToolStatus
+from backend.schemas import FailureType, ToolStatus
 from backend.state import AgentState
 
 
@@ -58,26 +58,61 @@ def _critic_router(state: AgentState) -> str:
     return "planner"
 
 
+def _needs_compensator(state: AgentState) -> bool:
+    """三类自愈故障 → compensator（硬编码路由，不走 LLM）。"""
+    ft = state.get("current_failure_type")
+    if ft in (FailureType.NO_SEAT, FailureType.NO_TICKET, FailureType.CONFLICT):
+        return True
+    for bucket in (state.get("dry_run_calls") or [], state.get("failed_calls") or []):
+        for call in bucket:
+            if call.status != ToolStatus.FAILED:
+                continue
+            code = (call.result or {}).get("code") or state.get("last_exception_code")
+            if code in (409, 404, 410):
+                return True
+            reason = str((call.result or {}).get("reason") or call.error or "")
+            if any(k in reason for k in ("满座", "已满", "无大桌", "售罄", "无票")):
+                return True
+    return state.get("last_exception_code") in (409, 404, 410)
+
+
 def _executor_router(state: AgentState) -> str:
     failed = state.get("failed_calls", []) or []
-    return "compensator" if failed else "notifier"
+    if failed:
+        return "compensator"
+    if state.get("require_human_interrupt"):
+        return "notifier"
+    return "notifier"
 
 
 def _compensator_router(state: AgentState) -> str:
+    """场景手术成功后必须回预检/下单，不能直接结束。"""
+    if state.get("require_human_interrupt"):
+        return "notifier"
+    retry = state.get("compensator_retry")
+    if retry == "dry_run":
+        return "dry_run"
+    if retry == "executor":
+        return "executor"
     iteration = state.get("plan_iteration", 0)
     max_iter = get_settings().max_plan_iterations
     return "planner" if iteration < max_iter else "notifier"
 
 
 def _dry_run_router(state: AgentState) -> str:
-    """预检有不可用项 → 回 Planner 换备选 POI（如 4 人烤肉满座）。"""
+    """预检失败：满座/无票/冲突 → compensator；其它失败 → planner。"""
     dry_calls = state.get("dry_run_calls", []) or []
     failed_dry = any(c.status == ToolStatus.FAILED for c in dry_calls)
-    if not failed_dry:
+    has_conflict = state.get("current_failure_type") == FailureType.CONFLICT
+    if not failed_dry and not has_conflict:
         return "executor"
     iteration = state.get("plan_iteration", 0)
     max_iter = get_settings().max_plan_iterations
-    return "planner" if iteration < max_iter else "executor"
+    if iteration >= max_iter:
+        return "executor"
+    if _needs_compensator(state):
+        return "compensator"
+    return "planner"
 
 
 def _revise_dry_run_router(state: AgentState) -> str:
@@ -91,6 +126,18 @@ def _revise_dry_run_router(state: AgentState) -> str:
     iteration = state.get("plan_iteration", 0)
     max_iter = get_settings().max_plan_iterations
     return "retry" if iteration < max_iter else "done"
+
+
+def _execution_compensator_router(state: AgentState) -> str:
+    if state.get("require_human_interrupt"):
+        return "notifier"
+    if state.get("compensator_retry") == "executor":
+        return "executor"
+    if state.get("patch_exhausted"):
+        return "notifier"
+    iteration = state.get("plan_iteration", 0)
+    max_iter = get_settings().max_plan_iterations
+    return "plan_patcher" if iteration < max_iter else "notifier"
 
 
 def _post_patch_router(state: AgentState) -> str:
@@ -140,7 +187,7 @@ def build_graph():
     g.add_conditional_edges(
         "dry_run",
         _dry_run_router,
-        {"planner": "planner", "executor": "executor"},
+        {"planner": "planner", "executor": "executor", "compensator": "compensator"},
     )
     g.add_conditional_edges(
         "executor",
@@ -150,7 +197,12 @@ def build_graph():
     g.add_conditional_edges(
         "compensator",
         _compensator_router,
-        {"planner": "planner", "notifier": "notifier"},
+        {
+            "planner": "planner",
+            "notifier": "notifier",
+            "dry_run": "dry_run",
+            "executor": "executor",
+        },
     )
     g.add_edge("notifier", END)
 
@@ -158,21 +210,13 @@ def build_graph():
 
 
 def build_dry_run_recovery_graph():
-    """预检失败后：从 Planner 重选 POI 再跑 critic → dry_run。"""
+    """预检 409 满座：compensator 场景手术 → 再 dry_run（不打扰用户）。"""
     g = StateGraph(AgentState)
-    g.add_node("planner", planner_node)
-    g.add_node("targeted_researcher", targeted_researcher_node)
-    g.add_node("critic", critic_node)
+    g.add_node("compensator", compensator_node)
     g.add_node("dry_run", dry_run_node)
 
-    g.add_edge(START, "planner")
-    g.add_edge("planner", "targeted_researcher")
-    g.add_edge("targeted_researcher", "critic")
-    g.add_conditional_edges(
-        "critic",
-        _critic_router,
-        {"dry_run": "dry_run", "planner": "planner"},
-    )
+    g.add_edge(START, "compensator")
+    g.add_edge("compensator", "dry_run")
     g.add_edge("dry_run", END)
     return g.compile()
 
@@ -229,9 +273,10 @@ def build_execution_graph():
     )
     g.add_conditional_edges(
         "compensator",
-        _compensator_router,
+        _execution_compensator_router,
         {
-            "planner": "plan_patcher",
+            "executor": "executor",
+            "plan_patcher": "plan_patcher",
             "notifier": "notifier",
         },
     )

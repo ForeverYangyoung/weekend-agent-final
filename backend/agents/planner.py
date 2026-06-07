@@ -42,6 +42,31 @@ def _shift(time_str: str, minutes: int) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+def _time_to_minutes(time_str: str) -> int:
+    h, m = (int(x) for x in time_str.split(":", 1))
+    return h * 60 + m
+
+
+def _matches_preferred_venue(c: POICandidate, hints: list[str]) -> bool:
+    if not hints:
+        return False
+    name = c.name
+    short = name.split("（")[0].strip()
+    return any(h in name or h in short for h in hints)
+
+
+def _narrow_by_preferred_venues(
+    pool: list[POICandidate],
+    profile: GroupProfile,
+    stage_key: str,
+) -> list[POICandidate]:
+    hints = profile.preferred_venues or []
+    if not hints or stage_key != "吃":
+        return pool
+    matched = [c for c in pool if _matches_preferred_venue(c, hints)]
+    return matched if matched else pool
+
+
 def _estimate_cost(people: int, stages: list[PlanStage]) -> int:
     total = 0
     for s in stages:
@@ -65,8 +90,24 @@ def _summary(scene: str, stages: list[PlanStage], order_label: str) -> str:
 
 
 _KIDS_KEYS = ("亲子", "儿童", "公园", "童", "宝宝", "海洋馆")
+_CHILD_ONLY_PLAY_KEYS = ("亲子", "儿童", "宝宝", "孩", "童趣", "游乐场", "儿童乐园")
 _LOW_CAL_KEYS = ("轻食", "沙拉", "健康", "低卡", "蔬食")
 _CUISINE_TAGS = frozenset({"川菜", "火锅", "粤菜", "日料", "烤肉", "轻食", "江浙菜"})
+_DEFAULT_DISTANCE_SLACK_KM = 1.5
+
+
+def _is_strict_distance(profile: GroupProfile) -> bool:
+    """HIL 面板显式设置的距离上限须严格执行（不加容差）。"""
+    return profile.confidence.get("distance_limit_km", 0.0) >= 0.9
+
+
+def _distance_slack_km(profile: GroupProfile) -> float:
+    return 0.0 if _is_strict_distance(profile) else _DEFAULT_DISTANCE_SLACK_KM
+
+
+def _within_distance_limit(c: POICandidate, profile: GroupProfile) -> bool:
+    d = float(c.metadata.get("distance_km", 0) or 0)
+    return d <= profile.distance_limit_km + _distance_slack_km(profile)
 
 
 def _candidate_text(c: POICandidate) -> str:
@@ -81,7 +122,10 @@ def _explicit_cuisines(profile: GroupProfile) -> set[str]:
 
 
 def _matches_cuisine(c: POICandidate, cuisines: set[str]) -> bool:
-    text = _candidate_text(c)
+    """菜系匹配只看店名/品类/标签，避免妥协文案里的「暂无日料」误命中。"""
+    tags = c.metadata.get("tags") or []
+    tag_str = " ".join(str(t) for t in tags)
+    text = f"{c.name} {c.category} {tag_str}".lower()
     return any(cuisine.lower() in text for cuisine in cuisines)
 
 
@@ -113,6 +157,11 @@ def _passes_hard_filter(
         if not any(k.lower() in text for k in _KIDS_KEYS):
             return False
 
+    # 1b) 朋友场景 + 玩阶段：别把亲子/儿童场地当成朋友聚会玩法
+    if stage_name == "玩" and profile.scene == "friends":
+        if any(k.lower() in text for k in _CHILD_ONLY_PLAY_KEYS):
+            return False
+
     # 2) 吃阶段：显式菜系 / 口味约束（轻食与烤肉互斥）
     if stage_name == "吃":
         if _wants_light_meal(profile):
@@ -136,9 +185,8 @@ def _passes_hard_filter(
         if any(k in text for k in snack_keys):
             return False
 
-    # 3) 距离绝对红线（给 1.5km 容差，超出真不行）
-    d = float(c.metadata.get("distance_km", 0) or 0)
-    if d > profile.distance_limit_km + 1.5:
+    # 3) 距离绝对红线（HIL 显式设限时零容差，否则给 1.5km 容差）
+    if not _within_distance_limit(c, profile):
         return False
 
     return True
@@ -162,21 +210,64 @@ def _filter_stage_candidates(
         and _passes_hard_filter(c, stage_key, profile)
     ]
     if kept:
-        return kept, None
+        return _narrow_by_preferred_venues(kept, profile, stage_key), None
 
     fallback_pool = [c for c in stage.candidates if c.poi_id not in blocked]
     if not fallback_pool:
         return [], None
 
-    fallback_pool.sort(
-        key=lambda x: (x.breakdown.total if x.breakdown else 0.0), reverse=True
-    )
-    best = fallback_pool[0]
-    short = best.name.split("（")[0].strip()
-    msg = (
-        f"⚠️ {stage_key}阶段妥协：您要求的条件较严，附近暂无完美匹配，"
-        f"已推荐综合分最高的「{short}」"
-    )
+    cuisines = _explicit_cuisines(profile)
+    in_range = [c for c in fallback_pool if _within_distance_limit(c, profile)]
+
+    if _is_strict_distance(profile):
+        if stage_key == "吃" and cuisines and in_range:
+            in_range_cuisine = [c for c in in_range if _matches_cuisine(c, cuisines)]
+            pool = in_range_cuisine if in_range_cuisine else in_range
+            if not pool:
+                return [], (
+                    f"⚠️ {stage_key}阶段：{profile.distance_limit_km:.0f}km 内暂无可用候选"
+                )
+            pool.sort(
+                key=lambda x: (x.breakdown.total if x.breakdown else 0.0), reverse=True
+            )
+            best = pool[0]
+            short = best.name.split("（")[0].strip()
+            if not in_range_cuisine:
+                cuisine_label = "/".join(sorted(cuisines))
+                msg = (
+                    f"⚠️ {stage_key}阶段妥协：{profile.distance_limit_km:.0f}km 内暂无"
+                    f"「{cuisine_label}」，已推荐范围内「{short}」"
+                )
+            else:
+                msg = (
+                    f"⚠️ {stage_key}阶段妥协：您要求的条件较严，附近暂无完美匹配，"
+                    f"已推荐综合分最高的「{short}」"
+                )
+        elif in_range:
+            in_range.sort(
+                key=lambda x: (x.breakdown.total if x.breakdown else 0.0), reverse=True
+            )
+            best = in_range[0]
+            short = best.name.split("（")[0].strip()
+            msg = (
+                f"⚠️ {stage_key}阶段妥协：您要求的条件较严，附近暂无完美匹配，"
+                f"已推荐 {profile.distance_limit_km:.0f}km 内综合分最高的「{short}」"
+            )
+        else:
+            return [], (
+                f"⚠️ {stage_key}阶段：{profile.distance_limit_km:.0f}km 内暂无可用候选"
+            )
+    else:
+        fallback_pool.sort(
+            key=lambda x: (x.breakdown.total if x.breakdown else 0.0), reverse=True
+        )
+        best = fallback_pool[0]
+        short = best.name.split("（")[0].strip()
+        msg = (
+            f"⚠️ {stage_key}阶段妥协：您要求的条件较严，附近暂无完美匹配，"
+            f"已推荐综合分最高的「{short}」"
+        )
+
     original = best.reason or ""
     compromised = best.model_copy(
         update={
@@ -258,35 +349,64 @@ def _build_plan_with_order(
         if pair is None:
             return None
         play, eat = pair
-    start = profile.start_time or "14:00"
-    cursor = start
-    stage_objs: dict[str, PlanStage] = {}
 
-    for name in order:
-        if name == "玩":
-            seg_start = cursor
-            seg_end = _shift(seg_start, _DURATION_PLAY)
-            stage_objs["玩"] = PlanStage(
-                name="玩",
-                start_time=seg_start,
-                end_time=seg_end,
-                primary=play,
-                backups=[c for c in play_pool if c.poi_id != play.poi_id],
-                notes=play.reason,
-            )
-            cursor = _shift(seg_end, _DURATION_TRANSIT)
-        elif name == "吃":
-            seg_start = cursor
-            seg_end = _shift(seg_start, _DURATION_EAT)
-            stage_objs["吃"] = PlanStage(
-                name="吃",
-                start_time=seg_start,
-                end_time=seg_end,
-                primary=eat,
-                backups=[c for c in eat_pool if c.poi_id != eat.poi_id],
-                notes=eat.reason,
-            )
-            cursor = _shift(seg_end, _DURATION_TRANSIT)
+    stage_objs: dict[str, PlanStage] = {}
+    meal_at = profile.meal_time
+    trip_start = profile.start_time or "14:00"
+
+    if meal_at and order == ("玩", "吃"):
+        eat_start = meal_at
+        eat_end = _shift(eat_start, _DURATION_EAT)
+        play_end = _shift(eat_start, -_DURATION_TRANSIT)
+        play_start = _shift(play_end, -_DURATION_PLAY)
+        if _time_to_minutes(play_start) < _time_to_minutes(trip_start):
+            play_start = trip_start
+            play_end = _shift(play_start, _DURATION_PLAY)
+            eat_start = _shift(play_end, _DURATION_TRANSIT)
+            eat_end = _shift(eat_start, _DURATION_EAT)
+        stage_objs["玩"] = PlanStage(
+            name="玩",
+            start_time=play_start,
+            end_time=play_end,
+            primary=play,
+            backups=[c for c in play_pool if c.poi_id != play.poi_id],
+            notes=play.reason,
+        )
+        stage_objs["吃"] = PlanStage(
+            name="吃",
+            start_time=eat_start,
+            end_time=eat_end,
+            primary=eat,
+            backups=[c for c in eat_pool if c.poi_id != eat.poi_id],
+            notes=eat.reason,
+        )
+    else:
+        cursor = trip_start
+        for name in order:
+            if name == "玩":
+                seg_start = cursor
+                seg_end = _shift(seg_start, _DURATION_PLAY)
+                stage_objs["玩"] = PlanStage(
+                    name="玩",
+                    start_time=seg_start,
+                    end_time=seg_end,
+                    primary=play,
+                    backups=[c for c in play_pool if c.poi_id != play.poi_id],
+                    notes=play.reason,
+                )
+                cursor = _shift(seg_end, _DURATION_TRANSIT)
+            elif name == "吃":
+                seg_start = meal_at if meal_at and name == "吃" else cursor
+                seg_end = _shift(seg_start, _DURATION_EAT)
+                stage_objs["吃"] = PlanStage(
+                    name="吃",
+                    start_time=seg_start,
+                    end_time=seg_end,
+                    primary=eat,
+                    backups=[c for c in eat_pool if c.poi_id != eat.poi_id],
+                    notes=eat.reason,
+                )
+                cursor = _shift(seg_end, _DURATION_TRANSIT)
 
     # 加餐改为 HIL 可选附加项，由 critic.attach_hil_addons 生成，不在此静默插入阶段
 
@@ -536,7 +656,7 @@ def suggest_insertions(plan: Plan, profile: GroupProfile) -> list[dict]:
 
 def _suggest_insertions_llm(plan: Plan, profile: GroupProfile, client) -> list[dict]:
     """LLM 根据 INSERTABLE_CATALOG 判断顺路活动，返回搜索需求列表。"""
-    from planner.state import INSERTABLE_CATALOG
+    from backend.insertion_catalog import INSERTABLE_CATALOG
 
     scene = profile.scene if profile.scene != "unknown" else "family"
 

@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from backend.mock_meituan.catalog import MOCK_MERCHANTS
 from backend.schemas import EditableTag, GroupProfile, ProfileEvidence
 
 # ─────────────────────────── 关键词表 ───────────────────────────
@@ -44,6 +45,8 @@ _DISTRICT_NAMES: tuple[str, ...] = (
 
 _EXPLICIT_HEAVY_DIETARY = frozenset({"火锅", "烤肉", "川菜", "湘菜", "重口味"})
 _IMPLICIT_LIGHT_DIETARY = frozenset({"低卡", "少糖", "轻食"})
+_IMPLICIT_ARCHIVE_DIETARY = _IMPLICIT_LIGHT_DIETARY | frozenset({"禁辣"})
+_IMPLICIT_SPICY_FORBIDDEN = frozenset({"重辣", "特辣", "变态辣"})
 
 _CUISINE_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("川菜", "川菜"),
@@ -158,16 +161,83 @@ def _infer_kids_ages(text: str, scene: str) -> tuple[list[int], list[str]]:
     return [int(m.group(1)) for m in matches[:3]], [m.group(0) for m in matches[:3]]
 
 
-def _infer_start_time(text: str) -> tuple[str | None, float, str]:
+_MEAL_TIME_RE = re.compile(
+    r"(中午|晚上|上午|早上|下午)?\s*(\d+)\s*点\s*想\s*吃"
+)
+_MEAL_TIME_ALT_RE = re.compile(
+    r"想\s*吃[^，。；\n]{0,12}?(中午|晚上|上午|早上|下午)?\s*(\d+)\s*点"
+)
+_NAMED_VENUE_FALLBACK: tuple[str, ...] = (
+    "川一哥", "姜虎东", "海底捞", "炙烤大叔", "禾绿", "绿茶",
+)
+
+
+def _hour_from_period(period: str, hour: int) -> int:
+    if period in ("下午", "晚上") and hour < 12:
+        return hour + 12
+    return hour
+
+
+def _infer_meal_time(text: str) -> tuple[str | None, float, str]:
+    for pattern in (_MEAL_TIME_RE, _MEAL_TIME_ALT_RE):
+        m = pattern.search(text)
+        if m:
+            period = (m.group(1) or "").strip()
+            hour = int(m.group(2))
+            hour = _hour_from_period(period, hour)
+            return f"{hour:02d}:00", 0.92, m.group(0)
+    return None, 0.4, ""
+
+
+def _infer_preferred_venues(text: str) -> tuple[list[str], list[tuple[str, str, float]]]:
+    """从原文匹配 catalog 店名或常见品牌简称。"""
+    hints: list[str] = []
+    ev: list[tuple[str, str, float]] = []
+    seen: set[str] = set()
+
+    for merchant in MOCK_MERCHANTS.values():
+        full_name = str(merchant.get("name") or "")
+        short = full_name.split("（")[0].strip()
+        for token in (short, full_name):
+            if len(token) < 2 or token not in text:
+                continue
+            if short in seen:
+                break
+            seen.add(short)
+            hints.append(short)
+            ev.append((short, token, 0.95))
+            break
+
+    for token in _NAMED_VENUE_FALLBACK:
+        if token in text and token not in seen:
+            seen.add(token)
+            hints.append(token)
+            ev.append((token, token, 0.9))
+
+    return hints, ev
+
+
+def _infer_start_time(
+    text: str,
+    *,
+    meal_time: str | None = None,
+) -> tuple[str | None, float, str]:
+    mor = _hits(text, _MORNING_HINTS)
+    if meal_time and mor:
+        return "09:00", 0.88, mor[0]
+
     m = re.search(r"(下午|晚上|早上|中午|上午)\s*(\d+)\s*点", text)
     if m:
         period, hour = m.group(1), int(m.group(2))
-        if period in ("下午", "晚上") and hour < 12:
-            hour += 12
+        if meal_time and period == "中午":
+            return "09:00", 0.82, f"{m.group(0)}·出游出发"
+        hour = _hour_from_period(period, hour)
         return f"{hour:02d}:00", 0.9, m.group(0)
 
     m = re.search(r"(\d+)\s*点", text)
     if m:
+        if meal_time:
+            return "09:00", 0.75, f"{m.group(0)}·出游出发"
         return f"{int(m.group(1)):02d}:00", 0.75, m.group(0)
 
     aft = _hits(text, _AFTERNOON_HINTS)
@@ -333,13 +403,16 @@ def has_explicit_heavy_dietary(profile: GroupProfile) -> bool:
 
 
 def apply_explicit_preference_priority(profile: GroupProfile) -> GroupProfile:
-    """显式菜系/重口味优先：自动拿掉隐式档案叠加的轻食/低卡约束。"""
+    """显式菜系/重口味优先：自动拿掉隐式档案叠加的健康约束。"""
     if not has_explicit_heavy_dietary(profile):
         return profile
-    kept = [d for d in profile.dietary if d not in _IMPLICIT_LIGHT_DIETARY]
-    if len(kept) == len(profile.dietary):
+    kept = [d for d in profile.dietary if d not in _IMPLICIT_ARCHIVE_DIETARY]
+    forbidden = [
+        tag for tag in profile.forbidden_tags if tag not in _IMPLICIT_SPICY_FORBIDDEN
+    ]
+    if len(kept) == len(profile.dietary) and len(forbidden) == len(profile.forbidden_tags):
         return profile
-    return profile.model_copy(update={"dietary": kept})
+    return profile.model_copy(update={"dietary": kept, "forbidden_tags": forbidden})
 
 
 def _sanitize_profile_consistency(profile: GroupProfile) -> GroupProfile:
@@ -521,7 +594,21 @@ def analyze_profile(
             )
         )
 
-    start_time, st_conf, st_term = _infer_start_time(text)
+    meal_time, mt_conf, mt_term = _infer_meal_time(text)
+    profile.meal_time = meal_time
+    profile.confidence["meal_time"] = mt_conf
+    if meal_time:
+        evidence.append(
+            ProfileEvidence(
+                field="meal_time",
+                value=meal_time,
+                term=mt_term,
+                confidence=mt_conf,
+                source="utterance",
+            )
+        )
+
+    start_time, st_conf, st_term = _infer_start_time(text, meal_time=meal_time)
     profile.start_time = start_time
     profile.confidence["start_time"] = st_conf
     if start_time:
@@ -531,6 +618,20 @@ def analyze_profile(
                 value=start_time,
                 term=st_term,
                 confidence=st_conf,
+                source="utterance",
+            )
+        )
+
+    venues, venue_ev = _infer_preferred_venues(text)
+    profile.preferred_venues = venues
+    profile.confidence["preferred_venues"] = 0.9 if venues else 0.5
+    for value, term, conf in venue_ev:
+        evidence.append(
+            ProfileEvidence(
+                field="preferred_venues",
+                value=value,
+                term=term,
+                confidence=conf,
                 source="utterance",
             )
         )
@@ -650,6 +751,9 @@ def apply_profile_overrides(
                 updated.dietary.append(value)
             elif action == "set":
                 updated.dietary = [value] if value else []
+                if value:
+                    updated.preferred_venues = []
+                    updated.confidence["preferred_venues"] = 0.5
         elif key == "interests":
             if action == "remove":
                 updated.interests = [i for i in updated.interests if i != value]

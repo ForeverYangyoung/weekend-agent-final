@@ -11,6 +11,7 @@ from typing import Any
 from backend.agents import analyze_profile
 from backend.agents.profiler import _build_editable_tags
 from backend.roles import trace_line
+from backend.constraints_util import build_constraints
 from backend.schemas import GroupProfile, ProfileEvidence
 from backend.state import AgentState
 
@@ -92,7 +93,7 @@ def inject_history_archives(profile: GroupProfile, text: str) -> tuple[GroupProf
                 ProfileEvidence(
                     field="forbidden_tags",
                     value=tag,
-                    term="历史档案·小明恢复期",
+                    term="历史档案·成员恢复期",
                     confidence=0.9,
                     source="history",
                 )
@@ -100,7 +101,7 @@ def inject_history_archives(profile: GroupProfile, text: str) -> tuple[GroupProf
         trace_lines.append(
             trace_line(
                 "Profiler",
-                "[历史档案唤醒] ⚠️ 系统检测到小明近期有「上火/痔疮」恢复期记录，"
+                "[历史档案唤醒] ⚠️ 系统检测到同行成员近期有「上火/痔疮」恢复期记录，"
                 "已叠加禁辣约束（禁辣 + 禁忌：重辣/特辣/变态辣）",
             )
         )
@@ -134,15 +135,31 @@ def profiler_node(state: AgentState) -> dict:
     tags_preview = [t.label for t in profile.editable_tags[:8]]
     start = profile.start_time or "—"
 
+    meal = profile.meal_time or "—"
+    venues = profile.preferred_venues or []
     base_trace = trace_line(
         "Profiler",
         f"scene={profile.scene}(conf={scene_conf:.2f}) people={profile.people_count} "
-        f"start={start} dietary={profile.dietary} interests={profile.interests} "
-        f"forbidden={profile.forbidden_tags} tags={tags_preview}",
+        f"start={start} meal={meal} venues={venues} dietary={profile.dietary} "
+        f"interests={profile.interests} forbidden={profile.forbidden_tags} "
+        f"tags={tags_preview}",
     )
 
+    constraints = build_constraints(profile)
     return {
         "group_profile": profile,
+        "constraints": constraints,
+        "anomaly_encountered": [],
+        "current_plan": {},
         "plan_iteration": 0,
-        "trace": [base_trace, *archive_trace],
+        "trace": [
+            base_trace,
+            trace_line(
+                "Profiler",
+                f"硬约束 calories≤{constraints.remaining_calories:.0f} "
+                f"fatigue={constraints.child_fatigue_index} "
+                f"cuisines={constraints.accepted_cuisines[:4]}",
+            ),
+            *archive_trace,
+        ],
     }

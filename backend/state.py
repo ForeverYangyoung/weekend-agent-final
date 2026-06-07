@@ -5,11 +5,15 @@ import operator
 from typing import Annotated, Any, TypedDict
 
 from backend.schemas import (
+    CollaborativeConsensus,
+    ConstraintTracker,
     CriticFeedback,
+    FailureType,
     GroupProfile,
     Plan,
     ResearchResult,
     SummaryCard,
+    TimelineEvent,
     ToolCall,
 )
 
@@ -24,6 +28,9 @@ class AgentState(TypedDict, total=False):
 
     # ── Profiler 输出 ──
     group_profile: GroupProfile | None
+    constraints: ConstraintTracker | None
+    anomaly_encountered: list[str]
+    current_plan: dict[str, Any]
 
     # ── Researcher 初搜输出 ──
     research_result: ResearchResult | None
@@ -48,6 +55,12 @@ class AgentState(TypedDict, total=False):
     dry_run_calls: list[ToolCall]
     executed_calls: list[ToolCall]
     failed_calls: list[ToolCall]
+    last_exception_code: int | None
+    current_failure_type: FailureType | None
+    require_human_interrupt: bool
+    compensator_retry: str | None  # "dry_run" | "executor"：场景手术后必须重试
+    timeline: list[TimelineEvent]
+    collaborative_consensus: CollaborativeConsensus | None
 
     # ── HIL：前端点改标签回写（replan 前写入，hil 节点消费后清空）──
     profile_overrides: list[dict[str, str]]

@@ -114,3 +114,67 @@ def post_json(path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """POST /xxx → 解析 JSON；4xx/5xx 转成 ToolError。"""
     resp = _request("POST", path, json=dict(payload))
     return _ensure_ok(resp)
+
+
+# ─────────────────────────── 异步并行预检（≤3s 死线）───────────────────────────
+
+
+async def _check_single_poi_mock(poi_id: str) -> dict[str, Any]:
+    """单店并行探针：桌位 + 票量 + 库存同时打听（I/O 并发）。"""
+    await asyncio.sleep(0.05)
+    table_task = _arequest(
+        "POST",
+        "/availability/table",
+        json={"poi_id": poi_id, "time": "18:00", "people": 4},
+    )
+    activity_task = _arequest(
+        "POST",
+        "/availability/activity",
+        json={"poi_id": poi_id, "start": "14:00"},
+    )
+    addon_task = _arequest(
+        "POST",
+        "/availability/addon",
+        json={"poi_id": poi_id},
+    )
+    table_r, activity_r, addon_r = await asyncio.gather(table_task, activity_task, addon_task)
+    table = _ensure_ok(table_r) if table_r.status_code < 400 else {}
+    activity = _ensure_ok(activity_r) if activity_r.status_code < 400 else {}
+    addon = _ensure_ok(addon_r) if addon_r.status_code < 400 else {}
+    return {
+        "poi_id": poi_id,
+        "seat_available": bool(table.get("available", False)),
+        "ticket_count": int(activity.get("tickets_left", 0) or 0),
+        "addon_in_stock": bool(addon.get("in_stock", True)),
+    }
+
+
+async def mock_parallel_precheck(poi_ids: list[str]) -> list[dict[str, Any]]:
+    """并行工具链：多家店同时预检，总耗时压到 3s 内。"""
+    tasks = [_check_single_poi_mock(pid) for pid in poi_ids]
+    return await asyncio.wait_for(asyncio.gather(*tasks), timeout=3.0)
+
+
+def parallel_precheck_poi_ids(poi_ids: list[str]) -> list[dict[str, Any]]:
+    """同步节点入口：asyncio.run 包装并行预检。"""
+    if not poi_ids:
+        return []
+    try:
+        return asyncio.run(mock_parallel_precheck(poi_ids))
+    except TimeoutError as e:
+        raise ToolError(599, "并行预检超时（>3s）", details={"poi_ids": poi_ids}) from e
+
+
+async def parallel_run_sync_checks(check_fn, items: list) -> list:
+    """通用：对同步检查函数做 asyncio.to_thread 并行。"""
+    tasks = [asyncio.to_thread(check_fn, item) for item in items]
+    return await asyncio.wait_for(asyncio.gather(*tasks), timeout=3.0)
+
+
+def run_parallel_sync_checks(check_fn, items: list) -> list:
+    if not items:
+        return []
+    try:
+        return asyncio.run(parallel_run_sync_checks(check_fn, items))
+    except TimeoutError as e:
+        raise ToolError(599, "并行工具链超时（>3s）") from e

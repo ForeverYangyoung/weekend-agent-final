@@ -45,10 +45,13 @@ def hil_apply_overrides_node(state: AgentState) -> dict:
             )
         )
 
+    from backend.constraints_util import build_constraints
+
     return {
         **clear_planning_artifacts(),
         "group_profile": merged,
         "profile_overrides": [],
         "plan_iteration": 0,
+        "constraints": build_constraints(merged),
         "trace": trace_lines,
     }

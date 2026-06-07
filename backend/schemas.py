@@ -41,6 +41,8 @@ class GroupProfile(BaseModel):
     distance_limit_km: float = 10.0
     duration_hours: float = 4.0
     start_time: str | None = None  # ISO 字符串，None 表示尽快出发
+    meal_time: str | None = None  # 用户锚定的用餐时刻，如「中午12点想吃」
+    preferred_venues: list[str] = Field(default_factory=list)  # 点名店名，如「川一哥」
     dietary: list[str] = Field(default_factory=list)  # 例 ["低卡", "不辣"]
     forbidden_tags: list[str] = Field(default_factory=list)  # 历史禁忌，例 ["重辣", "特辣"]
     interests: list[str] = Field(default_factory=list)  # 例 ["亲子", "展览"]
@@ -188,3 +190,45 @@ class SummaryCard(BaseModel):
     title: str
     body_markdown: str
     share_text: str  # 给老婆/朋友的微信可分享文案
+
+
+# ─────────────────────────── 故障自愈 & 多人协同 ───────────────────────────
+
+
+class FailureType(str, Enum):
+    """三类可自愈故障（LangGraph 全局流实时读取）。"""
+
+    NO_SEAT = "NO_SEAT"  # 409 满座
+    NO_TICKET = "NO_TICKET"  # 404/410 售罄无票
+    CONFLICT = "CONFLICT"  # 时间重叠 / 行程超时
+
+
+class CollaborativeConsensus(BaseModel):
+    """多人协同共识槽：投票与反馈，供 HIL / Notifier 读取。"""
+
+    shared_users: list[str] = Field(
+        default_factory=lambda: ["User_A", "User_B", "User_C"]
+    )
+    votes: dict[str, dict[str, bool]] = Field(default_factory=dict)
+    feedback_notes: list[str] = Field(default_factory=list)
+
+
+class TimelineEvent(BaseModel):
+    """动态时间轴事件（Compensator 压缩用）。"""
+
+    stage_name: str
+    poi_id: str
+    name: str
+    start_time: str
+    end_time: str
+    duration_minutes: int
+    is_core_constraint: bool = False
+    weight: float = 1.0
+
+
+class ConstraintTracker(BaseModel):
+    """硬约束追踪：重规划每轮必须校验，AI 不得选违反约束的商户。"""
+
+    remaining_calories: float = 600.0
+    child_fatigue_index: int = 0  # 0~100，>80 须切休息/室内
+    accepted_cuisines: list[str] = Field(default_factory=list)

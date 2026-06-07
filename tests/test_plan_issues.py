@@ -3,7 +3,13 @@ import json
 
 from fastapi.testclient import TestClient
 
-from backend.agents.profiler import analyze_profile, apply_profile_overrides
+from backend.agents.planner import build_plans
+from backend.agents.profiler import (
+    analyze_profile,
+    apply_explicit_preference_priority,
+    apply_profile_overrides,
+)
+from backend.nodes.researcher import researcher_node
 from backend.hil import build_plans_payload, detect_preference_conflicts
 from backend.server import app
 
@@ -17,7 +23,7 @@ def _payload_from_stream(buf: str) -> dict:
     raise AssertionError("no awaiting_confirm")
 
 
-def test_friends_stream_exposes_no_spicy_conflict() -> None:
+def test_friends_explicit_heavy_does_not_block_or_pick_kids_play() -> None:
     c = TestClient(app)
     buf = ""
     with c.stream(
@@ -32,22 +38,28 @@ def test_friends_stream_exposes_no_spicy_conflict() -> None:
             buf += chunk
 
     payload = _payload_from_stream(buf)
-    assert payload.get("preference_conflicts")
-    assert payload["preference_conflicts"][0]["code"] == "no_spicy_vs_heavy"
-    assert "历史档案唤醒" in buf or "禁辣" in buf
+    assert payload.get("preference_conflicts") in (None, [])
+    assert "小明" not in buf
+    plans = payload.get("plans") or []
+    assert plans
+    for plan in plans:
+        play_name = (plan.get("play") or {}).get("name", "")
+        assert "儿童乐园" not in play_name
+        assert "亲子" not in play_name
 
 
-def test_history_archive_no_spicy_vs_heavy_friends() -> None:
+def test_explicit_heavy_removes_archive_no_spicy_for_friends() -> None:
     from backend.nodes.profiler import inject_history_archives
 
     profile = analyze_profile("下午和三个朋友一起出去，4个人，想吃重口味")
     profile, traces = inject_history_archives(profile, profile.raw_text)
-    assert "禁辣" in profile.dietary
-    assert "重辣" in profile.forbidden_tags
     assert traces
+    assert all("小明" not in t for t in traces)
+    profile = apply_explicit_preference_priority(profile)
+    assert "禁辣" not in profile.dietary
+    assert "重辣" not in profile.forbidden_tags
     conflicts = detect_preference_conflicts(profile)
-    assert conflicts
-    assert conflicts[0]["code"] == "no_spicy_vs_heavy"
+    assert conflicts == []
 
 
 def test_explicit_sichuan_wins_over_implicit_light_archive() -> None:
@@ -195,3 +207,73 @@ def test_family_sichuan_keeps_sichuan_candidate_in_research() -> None:
     assert primary["isValid"] is True
     eat_name = primary.get("eat", {}).get("name", "")
     assert "川" in eat_name or "蜀" in eat_name
+
+
+def test_named_venue_chuanyige_extracted_from_utterance() -> None:
+    text = (
+        "今天早上带老婆孩子出去玩，孩子5岁，中午12点想吃川一哥火锅，帮我安排。"
+    )
+    profile = analyze_profile(text)
+    assert "川一哥" in profile.preferred_venues
+    assert profile.meal_time == "12:00"
+    assert profile.start_time == "09:00"
+    assert "火锅" in profile.dietary
+
+
+def test_hil_replan_japanese_5km_does_not_pick_6km_sushi() -> None:
+    """面板改「日料·5km」后，不应再出 6km 的禾绿并标距离超限。"""
+    from backend.agents.planner import build_plans
+    from backend.agents.profiler import analyze_profile
+    from backend.hil import build_plans_payload
+    from backend.nodes.hil import hil_apply_overrides_node
+    from backend.nodes.researcher import researcher_node
+
+    text = (
+        "今天早上带老婆孩子出去玩，孩子5岁，中午12点想吃川一哥火锅，帮我安排。"
+    )
+    profile = analyze_profile(text)
+    state = hil_apply_overrides_node(
+        {
+            "group_profile": profile,
+            "profile_overrides": [
+                {"key": "distance_limit_km", "value": "5", "action": "set"},
+                {"key": "dietary", "value": "日料", "action": "set"},
+            ],
+            "trace": [],
+        }
+    )
+    profile = state["group_profile"]
+    assert profile.preferred_venues == []
+    assert profile.dietary == ["日料"]
+    research = researcher_node({**state, "trace": []})["research_result"]
+    plans = build_plans(profile, research, top_k=2)
+    assert plans
+    for plan in plans:
+        for stage in plan.stages:
+            dist = float(stage.primary.metadata.get("distance_km", 0) or 0)
+            assert dist <= 5.0, f"{stage.primary.name} dist={dist}"
+        eat = next(s for s in plan.stages if s.name == "吃")
+        assert eat.primary.poi_id != "poi_rest_jp_001"
+    payloads = build_plans_payload(
+        {
+            **state,
+            "research_result": research,
+            "plan": plans[0],
+            "plan_alternatives": plans[1:],
+        }
+    )
+    assert payloads[0]["issueKind"] in ("needs_preference_fix", "alternative_available", "blocked")
+
+
+def test_named_venue_chuanyige_wins_over_higher_scored_hotpot() -> None:
+    text = (
+        "今天早上带老婆孩子出去玩，孩子5岁，中午12点想吃川一哥火锅，帮我安排。"
+    )
+    profile = analyze_profile(text)
+    state = researcher_node({"group_profile": profile, "trace": []})
+    research = state["research_result"]
+    plans = build_plans(profile, research, top_k=1)
+    assert plans
+    eat = next(s for s in plans[0].stages if s.name == "吃")
+    assert eat.primary.poi_id == "poi_003"
+    assert eat.start_time == "12:00"

@@ -19,7 +19,7 @@ def test_four_person_table_trap_replans_to_backup_restaurant() -> None:
     assert eat_stages[0].primary.poi_id != "poi_rest_201"
 
     traces = " ".join(final.get("trace") or [])
-    assert "预检" in traces or "重规划" in traces
+    assert "预检" in traces or "重规划" in traces or "场景手术" in traces
 
 
 def test_addon_delivery_links_to_play_exit_on_confirm() -> None:
@@ -233,7 +233,9 @@ def test_friends_top_k_plans_use_different_venues() -> None:
     }
     from backend.hil import build_plans_payload
 
-    final: AgentState = agent_graph.invoke(initial)  # type: ignore[arg-type]
+    from backend.graph import planning_graph
+
+    final: AgentState = planning_graph.invoke(initial)  # type: ignore[arg-type]
     payloads = build_plans_payload(final)
     assert len(payloads) >= 2
 

@@ -10,6 +10,60 @@ from __future__ import annotations
 
 from typing import Any
 
+# 语义化商户目录：多维度 metadata，支撑家庭/朋友冲突场景（减肥 vs 火锅 vs 亲子）
+MOCK_MERCHANTS: dict[str, dict[str, Any]] = {
+    "poi_001": {
+        "poi_id": "poi_001",
+        "name": "绿野低卡轻食（中关村店）",
+        "category": "轻食",
+        "score": 0.91,
+        "reason": "低卡健康约束，适合控热量；4人小桌",
+        "metadata": {
+            "avg_price": 72,
+            "distance_km": 4,
+            "district": "海淀区",
+            "tags": ["轻食", "低卡", "健康", "减脂"],
+            "avg_calories_per_meal": 350,
+            "is_low_calorie": True,
+            "has_kids_zone": False,
+            "max_party_size": 4,
+        },
+    },
+    "poi_002": {
+        "poi_id": "poi_002",
+        "name": "疯狂原始人儿童乐园",
+        "category": "亲子活动",
+        "score": 0.93,
+        "reason": "强亲子属性，3-7岁室内游乐",
+        "metadata": {
+            "avg_price": 88,
+            "distance_km": 5,
+            "district": "朝阳区",
+            "tags": ["亲子", "儿童", "室内", "游乐场"],
+            "suitable_ages": [3, 4, 5, 6, 7],
+            "kid_friendly": True,
+            "is_indoor": True,
+        },
+    },
+    "poi_003": {
+        "poi_id": "poi_003",
+        "name": "川一哥地道老火锅",
+        "category": "火锅",
+        "score": 0.88,
+        "reason": "聚会重口味，高辣高卡；8人大桌，易触发群体冲突",
+        "metadata": {
+            "avg_price": 110,
+            "distance_km": 3,
+            "district": "朝阳区",
+            "tags": ["火锅", "聚餐", "重口味", "麻辣"],
+            "avg_calories_per_meal": 1200,
+            "has_kids_zone": False,
+            "max_party_size": 8,
+            "is_crowded": True,
+        },
+    },
+}
+
 CATALOG: dict[str, dict[str, list[dict[str, Any]]]] = {
     "family": {
         "玩": [
@@ -334,6 +388,7 @@ CATALOG: dict[str, dict[str, list[dict[str, Any]]]] = {
                     "distance_km": 1,
                     "tags": ["烤肉", "网红打卡", "社交", "重口味"],
                     "table_type": ["4人桌"],
+                    "is_crowded": True,
                 },
             },
             {
@@ -390,8 +445,25 @@ CATALOG: dict[str, dict[str, list[dict[str, Any]]]] = {
 }
 
 
+def _semantic_injections(scene: str, stage: str) -> list[dict[str, Any]]:
+    """把 MOCK_MERCHANTS 按场景注入对应阶段。"""
+    if stage == "吃":
+        rows = [MOCK_MERCHANTS["poi_001"], MOCK_MERCHANTS["poi_003"]]
+        if scene == "friends":
+            return rows
+        return rows
+    if stage == "玩":
+        return [MOCK_MERCHANTS["poi_002"]] if scene == "family" else []
+    return []
+
+
 def search(scene: str, stage: str, limit: int = 10) -> list[dict[str, Any]]:
-    """按 scene + stage 查 POI；scene 缺省回退到 family，stage 不存在返回空。"""
+    """按 scene + stage 查 POI；合并语义目录，按 poi_id 去重。"""
     bucket = CATALOG.get(scene) or CATALOG.get("family") or {}
-    items = bucket.get(stage, [])
+    items = list(bucket.get(stage, []))
+    seen = {row["poi_id"] for row in items}
+    for row in _semantic_injections(scene, stage):
+        if row["poi_id"] not in seen:
+            items.insert(0, row)
+            seen.add(row["poi_id"])
     return list(items[:limit])
