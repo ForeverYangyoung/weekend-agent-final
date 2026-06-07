@@ -11,7 +11,7 @@ export function WelcomeScreen({ greeting, onScenarioSelect, disabled }: Props) {
     <div className="ai-bubble welcome-bubble">
       <div className="bubble-text welcome-text">{greeting}</div>
       <div className="welcome-hint">
-        推荐先选「朋友」：您只说重口味，系统会从档案 Mock 唤醒痔疮恢复期禁辣（右侧 Trace 第一行可见）。
+        推荐先选「朋友」：只说重口味，档案会 Mock 唤醒禁辣——点右下角 Trace 可看。
       </div>
       <div className="scenario-cards">
         <button

@@ -1,90 +1,143 @@
 # Weekend Agent
 
-美团 AI Hackathon · 赛题 06：**本地探索 — 周末闲时活动规划 Agent**
+美团 AI Hackathon · 赛题 **06 本地探索：周末闲时活动规划**
 
-一句话描述周末出行 → Agent 完成 **画像 → 检索 → 规划 → 校验 → 预检 → HIL 确认 → 下单 → 行程卡** 闭环。
+> **一句话**：用户说「今天下午想带家人/朋友出去 4–6 小时」→ Agent 产出 **玩 → 吃 → 附加** 可执行方案 → **预检订位/购票** → 用户确认后 **一键下单** → 生成可分享行程卡。  
+> 我们是 **执行型 Agent**（Task-Completion），不是只做搜索推荐。
 
-## 快速开始
+**交付形态**：**Web 答辩 UI**（对话 + 方案卡；右下角 **Trace** 按钮查看执行过程）+ Mock 美团工具链。无视频，请按本文亲自操作。
+
+---
+
+## 评委一分钟上手（推荐路径）
+
+### 环境
+
+
+| 项        | 要求                                             |
+| -------- | ---------------------------------------------- |
+| Python   | **3.11+**                                      |
+| 网络 / Key | **不需要**（Mock 美团，本地闭环）                          |
+| Node.js  | 可选；仓库已带 `frontend/dist`，`app.py` 仅在源码更新时尝试自动构建 |
+
+
+### 启动
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
 
-cd frontend
-npm install
-npm run build
-cd ..
-
 python app.py
-# 浏览器 http://127.0.0.1:8000
 ```
 
-开发模式：`python -m backend` + `cd frontend && npm run dev` → http://localhost:3000
+浏览器打开 **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
 
-测试：`python -m pytest tests/ -q`（当前 **73** 项）
+> 若页面空白：先 `cd frontend && npm install && npm run build`，再重新 `python app.py`。  
+> Windows 请勿同时开两个 `app.py`（8000 端口冲突会白屏）。
 
-亮点场景一键回归：`python scripts/demo_highlights.py`
+### 界面说明
 
-## 演示场景（答辩推荐）
+- 主界面：选场景 → 出 **Top-2 方案卡**（玩→吃）→ 微调 / 确认下单  
+- **Trace**：点右下角 **Trace** 按钮进入；看完点「← 返回规划界面」  
+- Trace 里建议看 `**算式·`** 行：POI 五维打分、方案顺路分、满座 Recovery（红）、预检通过（绿）
 
-下面每条都能在 UI 或 CLI 演，且有用例兜底（见 `scripts/demo_highlights.py`）。
+---
 
-### 核心闭环（必演）
+## 评委亲测案例（6 条）
 
-| 场景 | 输入 / 操作 | 看点（对应能力） |
-|------|-------------|------------------|
-| **朋友聚餐** | 「下午和 3 个朋友出去，4 人，想吃重口味」 | 跨端**禁辣档案 Mock**；显式重口味覆盖档案；**不选儿童乐园** |
-| **4 人满座自愈** | 朋友场景默认规划 → 等预检 | `check_table_availability` 409 → **Compensator** 换店，SSE Trace 可见 Recovery |
-| **家庭点名** | 「早上出游，中午 12 点川一哥火锅，孩子 5 岁」 | **preferred_venues** + **meal_time** 锚点；点名店优先于高分火锅 |
-| **Top-2 方案** | 任意场景首次规划 | 左右两卡 **玩→吃** 组合不同，带价格/距离/matchReason |
+> 看 Trace 时：点右下角 **Trace**。
+
+**案例 1 · 朋友重口味 vs 禁辣档案**  
+**操作**：点 **朋友场景** → **按此偏好开始规划**（预制，不用打字）  
+**预期**：Trace 有「历史档案唤醒」；出剧本杀+烤肉，**没有儿童乐园**  
+**巧思**：跨端档案 Mock；用户说重口味就覆盖档案禁辣
+
+**案例 2 · 满座自动换店**  
+**操作**：接案例 1，规划完后点 **Trace**  
+**预期**：有 `409 满座` → `Recovery` → 餐厅换成备选，预检通过  
+**巧思**：先预检再下单；满座走 Compensator，不直接报错
+
+**案例 3 · 点名川一哥 + 两卡同步**  
+**操作**：点 **家庭场景**，输入框改成一句：`今天早上带老婆孩子出去玩，孩子5岁，中午12点想吃川一哥火锅，帮我安排` → 规划  
+**预期**：吃饭优先川一哥；若满座，**左右两卡一起**换成海底捞等  
+**巧思**：点名店 + 午饭时间锚点；满座时主备方案同步改
+
+**案例 4 · 中途改日料 5km**  
+**操作**：接案例 3，改偏好为 **日料 + 5km** → 点 **重新规划**  
+**预期**：不再锁川一哥；餐厅 ≤5km；范围内没有日料就出黄条，不偷偷选 6km 店  
+**巧思**：HIL 改偏好重建约束；做不到就说清楚
+
+**案例 5 · 微调换餐厅**  
+**操作**：点 **家庭场景** → 规划 → 方案卡 **微调方案** → 多次 **换餐厅**  
+**预期**：换过的 **Wagas 各分店**不再出现；总价和店名一致；两卡内容不同  
+**巧思**：按品牌记住换过的店；微调后重算价格、刷新备选
+
+**案例 6 · 确认下单**  
+**操作**：任选满意方案 → 勾选 **智能附加** → **就选这个，帮我下单**  
+**预期**：出行程卡和分享文案；Trace 有下单成功；附加送到玩的地方出口  
+**巧思**：用户确认后才落单；附加不偷偷加进方案
+
+自动化回归：`python scripts/demo_highlights.py`
+
+---
+
+## 赛题对照（我们覆盖了什么）
+
+
+| 赛题要求                             | 我们的实现                                             |
+| -------------------------------- | ------------------------------------------------- |
+| 4–6 小时 **玩→吃→附加** 行程             | Planner 两阶段排程 + 顺路加餐检索                            |
+| **家庭**（5 岁娃 + 老婆控卡）/ **朋友**（4 人） | 首页两场景预设 + 硬过滤亲子/社交                                |
+| **查空位、代订、代下单**                   | DryRun 预检 → HIL 暂停 → Executor 落单                  |
+| **Mock 工具**                      | `backend/mock_meituan` 有状态满座 / 语义目录               |
+| **可演示**                          | Web UI + `python -m backend.demo --scene friends` |
+| **设计文档 ≤2 页**                    | `[设计文档.md](设计文档.md)`                              |
+
+
+---
+
+## 开发与测试
 
 ```powershell
+# 开发模式（热更新前端）
+python -m backend
+cd frontend && npm run dev    # http://localhost:3000
+
+# 全量测试
+python -m pytest tests/ -q     # 73 项
+
+# CLI 演示（无浏览器时）
 python -m backend.demo --scene friends
 python -m backend.demo --scene family
-python -m backend.demo --scene family --history   # 注入历史画像 Mock（Zero-Skill 切口）
 ```
-
-### 加分项（建议挑 2～3 条深演）
-
-| 场景 | 输入 / 操作 | 看点 |
-|------|-------------|------|
-| **午市满座 · 两卡同步** | 家庭 + 川一哥 → 午市预检 FAIL | 主备方案**同时**换店，备选卡不残留已满座店名 |
-| **中途变卦** | 偏好面板改「日料 + 5km」→ replan | 清旧点名店；**严格 5km**；范围内无日料则诚实妥协提示 |
-| **偏好矛盾** | 家庭低卡档案 + 面板加「火锅」 | `issueKind=needs_preference_fix` 黄条，**不静默换店** |
-| **微调换店** | 方案卡「微调」多次换餐厅 | **品牌级排除**（Wagas 全分店）、总价重算、两卡重新差异化 |
-| **顺路加餐** | 勾选「顺畅离园」→ 确认下单 | 仅 confirm 落单；`order_addon` **送到玩阶段出口** |
-| **并行预检** | 看 SSE Trace | 多阶段读工具 **≤3s 并行**；失败分 NO_SEAT / NO_TICKET / CONFLICT |
-| **有状态 Mock** | 川一哥午市再订 | 满座后 POI 进 anomaly、constraint 更新（语义目录 + Stateful backend） |
-| **幂等确认** | 同 session 重复 confirm | `idempotency_key` 返回原单 |
-
-### UI 操作速记
-
-1. **朋友**：选场景 → 输入重口味 → 看 Trace 预检/Recovery → 对比两卡 → 确认下单  
-2. **家庭川一哥**：输入点名 + 12 点 → 若黄条满座 → 两卡应同步换海底捞等 → 选备选确认  
-3. **变卦**：规划后改偏好（日料·5km / 轻食）→ replan；不满意用「微调」换店  
-4. **附加**：家庭方案勾选智能附加 → 「就选这个，帮我下单」
 
 ## 文档
 
-| 文件 | 说明 |
-|------|------|
-| [`设计文档.md`](设计文档.md) | **赛题交付**（≤2 页）：Planning、工具链、异常处理、演示 |
-| [`docs/mock-api.md`](docs/mock-api.md) | Mock 美团 HTTP 端点 |
+
+| 文件                                     | 说明                                 |
+| -------------------------------------- | ---------------------------------- |
+| `[设计文档.md](设计文档.md)`                   | 赛题交付：Planning 策略、工具链、异常处理、Trace 打分 |
+| `[docs/mock-api.md](docs/mock-api.md)` | Mock 美团 HTTP 端点                    |
+
 
 ## 项目结构
 
 ```
-backend/     LangGraph + FastAPI + SSE + Mock 美团 + HIL
-frontend/    React 答辩 UI（方案卡、Trace、偏好面板）
-tests/       API 与场景回归（pytest）
+backend/     LangGraph 状态机 + FastAPI SSE + Mock 美团 + HIL
+frontend/    React 答辩 UI（方案卡、Trace 算式、偏好面板）
+tests/       场景回归 pytest
+scripts/     demo_highlights.py 亮点一键验
 ```
 
 ## API
 
-| 端点 | 说明 |
-|------|------|
-| `POST /v1/agent/stream` | 规划 + 预检，SSE 推送 Trace |
-| `POST /v1/agent/replan` | HIL 改偏好后重规划 |
-| `POST /v1/plan/revise` | 微调（换店/换活动） |
-| `POST /v1/agent/confirm` | 确认下单 |
+
+| 端点                       | 说明                   |
+| ------------------------ | -------------------- |
+| `POST /v1/agent/stream`  | 规划 + 预检，SSE 推送 Trace |
+| `POST /v1/agent/replan`  | HIL 改偏好后重规划          |
+| `POST /v1/plan/revise`   | 微调（换店/换活动）           |
+| `POST /v1/agent/confirm` | 确认下单                 |
+
+

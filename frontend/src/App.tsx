@@ -34,7 +34,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
     role: 'ai',
     type: 'welcome',
     text:
-      '嗨，我是你的周末小助手。\n\n答辩演示：左侧对话规划，右侧实时 Trace。\n先选场景再规划；朋友局可看「未说禁辣却唤醒健康档案」的 Zero-Skill Mock（详见 Trace 历史档案行）。满意后确认下单。',
+      '嗨，我是你的周末小助手。\n\n先选场景再规划；想看 Agent 怎么打分、怎么自愈，点右下角 Trace。\n朋友局推荐先试：只说重口味，Trace 里会出现跨端健康档案 Mock。满意后确认下单。',
     timestamp: Date.now(),
   },
 ]

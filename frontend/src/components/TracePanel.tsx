@@ -109,7 +109,7 @@ export function TracePanel({ lines, live, currentStep }: Props) {
         <ScoreLegendBox show={hasScoreContent} />
         {displayLines.length === 0 ? (
           <div className="trace-empty">
-            左侧选择场景或开始规划后，这里会按步骤追加 Trace；出现算式行后，顶部图例会说明每项含义。
+            在主界面选场景并开始规划后，这里会按步骤追加 Trace；出现算式行后，顶部图例会说明每项含义。
           </div>
         ) : (
           displayLines.map((line, i) => {
